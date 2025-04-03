@@ -1,0 +1,81 @@
+# Customer 360 Data Product Configuration
+
+# LLM Configuration
+llm:
+  provider: "ollama"  # Can be 'openai', 'anthropic', 'ollama'
+  model_name: "llama3"  # Model to use, e.g., 'gpt-4', 'claude-3-opus', 'llama3'
+  temperature: 0.2
+  max_tokens: 2000
+
+# Agent Settings
+agents:
+  data_steward:
+    enabled: true
+    model_name: "llama3"
+    description: "identifying, validating, and documenting data sources"
+    
+  domain_expert:
+    enabled: true
+    model_name: "llama3"
+    description: "providing business context and requirements for banking data"
+    
+  data_engineer:
+    enabled: true
+    model_name: "llama3"
+    description: "implementing data extraction, transformation, and loading processes"
+    
+  mapping:
+    enabled: true
+    model_name: "llama3"
+    description: "automating source-to-target data attribute mapping"
+    
+  certification:
+    enabled: true
+    model_name: "llama3"
+    description: "facilitating and documenting the data product certification process"
+
+# Database Settings
+database:
+  path: "data/customer360.db"
+  type: "sqlite"
+
+# Source Systems Settings
+source_systems:
+  auto_discover: true
+  scan_on_start: true  # Should the system scan sources on startup?
+
+# AutoGen Config
+autogen:
+  group_chat_enabled: true
+  max_round: 10
+  use_memory: true
+  cache_seed: 42
+
+# CrewAI Config
+crewai:
+  enabled: true
+  verbose: true
+  memory_enabled: true
+  cache_enabled: true
+
+# Workflow Settings
+workflows:
+  default:
+    name: "customer360"
+    description: "Customer 360 data product creation workflow"
+    steps:
+      - name: "source_discovery"
+        agent: "data_steward"
+        action: "identify_sources"
+      - name: "attribute_mapping"
+        agent: "mapping"
+        action: "suggest_mappings"
+      - name: "mapping_validation"
+        agent: "mapping"
+        action: "validate_mapping"
+      - name: "etl_generation"
+        agent: "data_engineer"
+        action: "generate_etl_code"
+      - name: "certification"
+        agent: "certification"
+        action: "create_certification"
