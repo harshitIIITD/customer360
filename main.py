@@ -1,204 +1,137 @@
 #!/usr/bin/env python3
 """
-Customer 360 Agentic Solution
+Customer 360 Data Product with Agentic Solution
 
-This is the main entry point for the Customer 360 data product solution
-that uses multiple specialized agents to create a unified customer view 
-for retail banking.
+This is the main entry point for the Customer 360 data product solution,
+which uses multiple specialized agents to build a comprehensive banking
+customer view.
 """
 
 import os
 import sys
-import argparse
 import logging
+import argparse
 import yaml
 from pathlib import Path
-import datetime
+from typing import Dict, Any, Optional
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger("Customer360")
+logger = logging.getLogger(__name__)
 
-# Add current directory to path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# Import from our modules
-from database.setup_db import create_database
-from agents import DataStewardAgent, DomainExpertAgent, DataEngineerAgent, MappingAgent, CertificationAgent
-from tools import scan_source, extract_attributes, validate_mapping, validate_all_mappings
-
-def load_config():
-    """Load the configuration from the YAML file."""
-    config_path = Path(__file__).parent / "data" / "config.yaml"
+def load_config(config_path: str = None) -> Dict[str, Any]:
+    """
+    Load the application configuration from the YAML file.
+    
+    Args:
+        config_path: Path to the configuration file
+        
+    Returns:
+        Configuration dictionary
+    """
+    if config_path is None:
+        config_path = os.path.join("data", "config.yaml")
+        
     try:
         with open(config_path, 'r') as config_file:
             config = yaml.safe_load(config_file)
-            logger.info("Configuration loaded successfully")
-            return config
+            
+        logger.info(f"Loaded configuration from {config_path}")
+        return config
     except Exception as e:
         logger.error(f"Error loading configuration: {e}")
         return {}
-
-def create_agents(config):
-    """Create agent instances based on configuration."""
-    agents = {}
-    agent_classes = {
-        "data_steward": DataStewardAgent,
-        "domain_expert": DomainExpertAgent,
-        "data_engineer": DataEngineerAgent,
-        "mapping": MappingAgent,
-        "certification": CertificationAgent
-    }
+        
+def initialize_database(config: Dict[str, Any]) -> bool:
+    """
+    Initialize the database for the Customer 360 solution.
     
-    if not config or 'agents' not in config:
-        logger.warning("No agent configuration found, using defaults")
-        # Create default agents if no config
-        for agent_name, agent_class in agent_classes.items():
-            agents[agent_name] = agent_class()
-        return agents
-    
-    # Create agents from configuration
-    for agent_name, agent_class in agent_classes.items():
-        if agent_name in config['agents'] and config['agents'][agent_name].get('enabled', True):
-            model_name = config['agents'][agent_name].get('model_name', "llama3")
-            agents[agent_name] = agent_class(model_name=model_name)
-            logger.info(f"Created {agent_name} agent with model {model_name}")
-        else:
-            logger.info(f"Agent {agent_name} is disabled in configuration")
-    
-    return agents
-
-def run_workflow(workflow_name, agents, config):
-    """Run a specific workflow from the configuration."""
-    if 'workflows' not in config or workflow_name not in config['workflows']:
-        logger.error(f"Workflow {workflow_name} not found in configuration")
+    Args:
+        config: The application configuration
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from database.setup_db import init_db
+        
+        db_path = config.get('database', {}).get('path', 'customer360.db')
+        schema_path = config.get('database', {}).get('schema_path', 'database/schema.sql')
+        
+        logger.info(f"Initializing database: {db_path}")
+        init_db(db_path, schema_path)
+        
+        logger.info("Database initialization completed")
+        return True
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}")
         return False
+
+def run_workflow(config: Dict[str, Any], framework: str, workflow_name: str) -> bool:
+    """
+    Run a workflow using the specified agent framework.
     
-    workflow = config['workflows'][workflow_name]
-    logger.info(f"Starting workflow: {workflow['name']} - {workflow['description']}")
-    
-    # Store workflow state
-    workflow_state = {"success": True, "results": {}}
-    
-    # Execute each step in the workflow
-    for step in workflow.get('steps', []):
-        step_name = step.get('name', 'unnamed_step')
-        agent_name = step.get('agent')
-        action = step.get('action')
+    Args:
+        config: The application configuration
+        framework: Agent framework to use ('autogen' or 'crewai')
+        workflow_name: Name of the workflow to run
         
-        logger.info(f"Executing workflow step: {step_name} with agent {agent_name}, action {action}")
-        
-        if agent_name not in agents:
-            logger.error(f"Agent {agent_name} not found for step {step_name}")
-            workflow_state["success"] = False
-            continue
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        if framework == 'autogen':
+            from autogen_implementation.main_autogen import run_autogen
+            logger.info(f"Running workflow {workflow_name} using AutoGen framework")
+            return run_autogen(config, workflow_name)
             
-        # Prepare inputs based on previous results and any step-specific inputs
-        inputs = step.get('inputs', {}).copy()
-        inputs['action'] = action
-        
-        # Add results from previous steps if referenced
-        for input_name, input_value in list(inputs.items()):
-            if isinstance(input_value, str) and input_value.startswith("$result."):
-                # Parse reference to previous result: $result.step_name.result_key
-                parts = input_value.split(".")
-                if len(parts) >= 3:
-                    prev_step = parts[1]
-                    result_key = ".".join(parts[2:])
-                    if prev_step in workflow_state["results"]:
-                        prev_result = workflow_state["results"][prev_step]
-                        if result_key in prev_result:
-                            inputs[input_name] = prev_result[result_key]
-        
-        # Run the agent
-        agent = agents[agent_name]
-        result = agent.run(inputs)
-        
-        # Store the result for potential use by later steps
-        workflow_state["results"][step_name] = result
-        
-        if not result.get('success', False):
-            logger.error(f"Step {step_name} failed: {result.get('error', 'Unknown error')}")
-            workflow_state["success"] = False
-    
-    logger.info(f"Workflow {workflow_name} completed with status: {'SUCCESS' if workflow_state['success'] else 'FAILURE'}")
-    return workflow_state
-
-def setup_environment():
-    """Set up the environment for the application."""
-    # Set the current date for agent prompts
-    os.environ["CURRENT_DATE"] = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # Ensure the database exists
-    db_created = create_database()
-    if not db_created:
-        logger.error("Failed to create or verify database")
+        elif framework == 'crewai':
+            from crewai_implementation.main_crewai import run_crewai
+            logger.info(f"Running workflow {workflow_name} using CrewAI framework")
+            return run_crewai(config, workflow_name)
+            
+        else:
+            logger.error(f"Unsupported framework: {framework}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error running workflow: {e}")
         return False
-    
-    return True
 
 def main():
-    """Main entry point for the application."""
-    parser = argparse.ArgumentParser(description="Customer 360 Agentic Solution")
-    parser.add_argument(
-        "--workflow", "-w",
-        default="default",
-        help="Name of the workflow to run (default: 'default')"
-    )
-    parser.add_argument(
-        "--implementation", "-i",
-        choices=["native", "autogen", "crewai"],
-        default="native",
-        help="Implementation to use (default: 'native')"
-    )
+    """Main entry point for the Customer 360 application."""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Customer 360 Data Product with Agentic Solution")
+    parser.add_argument("--config", help="Path to the configuration file", default="data/config.yaml")
+    parser.add_argument("--framework", choices=["autogen", "crewai"], 
+                        help="Agent framework to use", default="autogen")
+    parser.add_argument("--workflow", help="Name of the workflow to run", default="default")
+    parser.add_argument("--init-db", action="store_true", help="Initialize the database")
+    
     args = parser.parse_args()
     
-    # Setup environment
-    if not setup_environment():
-        return 1
-    
     # Load configuration
-    config = load_config()
+    config = load_config(args.config)
     if not config:
         logger.error("Failed to load configuration")
         return 1
-    
-    if args.implementation == "native":
-        # Create agents
-        agents = create_agents(config)
-        if not agents:
-            logger.error("Failed to create agents")
-            return 1
         
-        # Run the specified workflow
-        result = run_workflow(args.workflow, agents, config)
-        if not result["success"]:
-            logger.error("Workflow execution failed")
+    # Initialize the database if requested
+    if args.init_db:
+        if not initialize_database(config):
+            logger.error("Database initialization failed")
             return 1
     
-    elif args.implementation == "autogen":
-        # Use the AutoGen implementation
-        logger.info("Using AutoGen implementation")
-        from autogen_implementation.main_autogen import run_autogen
-        result = run_autogen(config, args.workflow)
-        if not result:
-            logger.error("AutoGen implementation failed")
-            return 1
-    
-    elif args.implementation == "crewai":
-        # Use the CrewAI implementation
-        logger.info("Using CrewAI implementation")
-        from crewai_implementation.main_crewai import run_crewai
-        result = run_crewai(config, args.workflow)
-        if not result:
-            logger.error("CrewAI implementation failed")
-            return 1
-    
-    logger.info("Customer 360 application completed successfully")
-    return 0
+    # Run the specified workflow
+    if run_workflow(config, args.framework, args.workflow):
+        logger.info(f"Workflow {args.workflow} completed successfully")
+        return 0
+    else:
+        logger.error(f"Workflow {args.workflow} failed")
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
