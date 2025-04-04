@@ -7,235 +7,183 @@ This module provides API endpoints for managing ETL processes in the Customer 36
 
 import logging
 from flask import request, jsonify, Blueprint
-from web_dashboard.api import api
-from tools.etl_process_manager import get_etl_manager, ETLProcessManager
+import os
+import sys
+from datetime import datetime
+from typing import Dict, List, Any, Optional
+
+# Add parent directory to path to import from tools
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from tools.etl_process_manager import ETLProcessManager
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Helper functions
-def format_response(success, data=None, error=None):
-    """Format a standardized API response"""
-    response = {"success": success}
-    if data:
-        response["data"] = data
-    if error:
-        response["error"] = error
-    return jsonify(response)
+# Create Blueprint
+etl_bp = Blueprint('etl', __name__)
 
-# Get ETL manager instance
-etl_manager = get_etl_manager()
+# Initialize ETL Process Manager
+etl_manager = ETLProcessManager()
 
-# ETL Job endpoints
-@api.route('/etl/jobs', methods=['POST'])
-def submit_etl_job():
-    """Submit a new ETL job"""
-    try:
-        data = request.json
-        job_name = data.get('job_name')
-        job_type = data.get('job_type')
-        source_id = data.get('source_id')
-        created_by = data.get('created_by', request.remote_addr)
-        
-        if not job_name or not job_type:
-            return format_response(False, error="Job name and type are required")
-            
-        result = etl_manager.submit_job(job_name, job_type, source_id, created_by)
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error submitting ETL job: {e}")
-        return format_response(False, error=str(e))
+@etl_bp.route('/jobs', methods=['GET'])
+def get_jobs():
+    """Get a list of ETL jobs based on status filter"""
+    status = request.args.get('status', None)
+    limit = int(request.args.get('limit', 20))
+    offset = int(request.args.get('offset', 0))
+    
+    if status in ['running', 'active']:
+        jobs = etl_manager.get_active_jobs()
+        return jsonify({
+            'success': True,
+            'jobs': jobs,
+            'total': len(jobs)
+        })
+    else:
+        jobs = etl_manager.get_job_history(limit=limit, offset=offset, status_filter=status)
+        # For pagination, we would typically get the total count separately
+        # This is a simplified version
+        return jsonify({
+            'success': True,
+            'jobs': jobs,
+            'total': len(jobs) + offset  # This is an approximation
+        })
 
-@api.route('/etl/jobs', methods=['GET'])
-def get_etl_jobs():
-    """Get list of ETL jobs based on status"""
-    try:
-        status_filter = request.args.get('status')
-        
-        if status_filter == 'active':
-            jobs = etl_manager.get_active_jobs()
-            return format_response(True, data={"jobs": jobs})
-        else:
-            limit = int(request.args.get('limit', 50))
-            jobs = etl_manager.get_job_history(limit)
-            return format_response(True, data={"jobs": jobs})
-            
-    except Exception as e:
-        logger.error(f"Error getting ETL jobs: {e}")
-        return format_response(False, error=str(e))
+@etl_bp.route('/jobs/<job_id>', methods=['GET'])
+def get_job_details(job_id):
+    """Get detailed information about a specific job"""
+    job = etl_manager.get_job(job_id)
+    
+    if job:
+        return jsonify({
+            'success': True,
+            'job': job
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Job not found'
+        }), 404
 
-@api.route('/etl/jobs/<job_id>', methods=['GET'])
-def get_etl_job(job_id):
-    """Get details for a specific ETL job"""
-    try:
-        job = etl_manager.get_job(job_id)
+@etl_bp.route('/jobs', methods=['POST'])
+def create_job():
+    """Create a new ETL job"""
+    data = request.get_json()
+    
+    if not data:
+        return jsonify({
+            'success': False,
+            'error': 'No data provided'
+        }), 400
         
-        if job:
-            return format_response(True, data={"job": job})
-        else:
-            return format_response(False, error=f"Job not found: {job_id}")
-            
-    except Exception as e:
-        logger.error(f"Error getting ETL job details: {e}")
-        return format_response(False, error=str(e))
-        
-@api.route('/etl/jobs/<job_id>/cancel', methods=['POST'])
-def cancel_etl_job(job_id):
-    """Cancel an ETL job"""
-    try:
-        result = etl_manager.cancel_job(job_id)
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error cancelling ETL job: {e}")
-        return format_response(False, error=str(e))
+    required_fields = ['job_name', 'job_type', 'source_id']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({
+                'success': False,
+                'error': f'Missing required field: {field}'
+            }), 400
+    
+    # Set default values
+    data['created_by'] = data.get('created_by', 'system')
+    
+    # Create job
+    job_id = etl_manager.create_job(
+        job_name=data['job_name'],
+        job_type=data['job_type'],
+        source_id=data['source_id'],
+        created_by=data['created_by'],
+        parameters=data.get('parameters', {})
+    )
+    
+    if job_id:
+        return jsonify({
+            'success': True,
+            'job_id': job_id,
+            'message': 'Job created successfully'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to create job'
+        }), 500
 
-@api.route('/etl/statistics', methods=['GET'])
-def get_etl_statistics():
+@etl_bp.route('/jobs/<job_id>/cancel', methods=['POST'])
+def cancel_job(job_id):
+    """Cancel a running or queued job"""
+    result = etl_manager.update_job_status(job_id, ETLProcessManager.STATUS_CANCELLED)
+    
+    if result:
+        return jsonify({
+            'success': True,
+            'message': 'Job cancelled successfully'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to cancel job'
+        }), 500
+
+@etl_bp.route('/jobs/<job_id>/restart', methods=['POST'])
+def restart_job(job_id):
+    """Restart a completed, cancelled, or failed job"""
+    # First get the original job details
+    original_job = etl_manager.get_job(job_id)
+    
+    if not original_job:
+        return jsonify({
+            'success': False,
+            'error': 'Job not found'
+        }), 404
+        
+    # Create a new job with the same parameters
+    new_job_id = etl_manager.create_job(
+        job_name=f"Restart of {original_job['job_name']}",
+        job_type=original_job['job_type'],
+        source_id=original_job['source_id'],
+        created_by=original_job['created_by'],
+        parameters={}  # We would need to store parameters in the DB to properly implement this
+    )
+    
+    if new_job_id:
+        return jsonify({
+            'success': True,
+            'original_job_id': job_id,
+            'new_job_id': new_job_id,
+            'message': 'Job restarted successfully'
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'error': 'Failed to restart job'
+        }), 500
+
+@etl_bp.route('/statistics', methods=['GET'])
+def get_statistics():
     """Get ETL job statistics"""
-    try:
-        result = etl_manager.get_job_statistics()
-        return jsonify(result)
+    time_period = request.args.get('period', None)
+    
+    if time_period not in ['today', 'week', 'month', 'all', None]:
+        return jsonify({
+            'success': False,
+            'error': 'Invalid time period'
+        }), 400
         
-    except Exception as e:
-        logger.error(f"Error getting ETL statistics: {e}")
-        return format_response(False, error=str(e))
+    stats = etl_manager.get_job_statistics(time_period)
+    return jsonify(stats)
 
-# ETL Scheduled Jobs endpoints
-@api.route('/etl/scheduled-jobs', methods=['GET'])
-def get_scheduled_etl_jobs():
-    """Get list of scheduled ETL jobs"""
-    try:
-        scheduled_jobs = etl_manager.get_scheduled_jobs()
-        return format_response(True, data={"scheduled_jobs": scheduled_jobs})
-            
-    except Exception as e:
-        logger.error(f"Error getting scheduled ETL jobs: {e}")
-        return format_response(False, error=str(e))
-
-@api.route('/etl/scheduled-jobs', methods=['POST'])
-def create_scheduled_etl_job():
-    """Create a new scheduled ETL job"""
-    try:
-        data = request.json
-        process_name = data.get('process_name')
-        job_type = data.get('job_type')
-        source_system = data.get('source_system')
-        target_system = data.get('target_system')
-        cron_schedule = data.get('cron_schedule')
-        
-        if not process_name or not job_type or not target_system or not cron_schedule:
-            return format_response(False, error="Missing required fields")
-            
-        result = etl_manager.create_scheduled_job(
-            process_name=process_name,
-            job_type=job_type,
-            source_system=source_system,
-            target_system=target_system,
-            cron_schedule=cron_schedule
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error creating scheduled ETL job: {e}")
-        return format_response(False, error=str(e))
-
-@api.route('/etl/scheduled-jobs/<process_id>', methods=['PUT'])
-def update_scheduled_etl_job(process_id):
-    """Update a scheduled ETL job"""
-    try:
-        data = request.json
-        result = etl_manager.update_scheduled_job(process_id, data)
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error updating scheduled ETL job: {e}")
-        return format_response(False, error=str(e))
-
-@api.route('/etl/scheduled-jobs/<process_id>', methods=['DELETE'])
-def delete_scheduled_etl_job(process_id):
-    """Delete a scheduled ETL job"""
-    try:
-        result = etl_manager.delete_scheduled_job(process_id)
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error deleting scheduled ETL job: {e}")
-        return format_response(False, error=str(e))
-
-# Data Lineage endpoints
-@api.route('/etl/lineage', methods=['GET'])
-def get_data_lineage():
-    """Get data lineage information with optional filters"""
-    try:
-        target_table = request.args.get('target_table')
-        source_system = request.args.get('source_system')
-        
-        if source_system and source_system.isdigit():
-            source_system = int(source_system)
-            
-        result = etl_manager.get_data_lineage(
-            target_table=target_table,
-            source_system=source_system
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error getting data lineage: {e}")
-        return format_response(False, error=str(e))
-
-@api.route('/etl/lineage/column', methods=['GET'])
-def get_column_lineage():
-    """Get lineage for a specific column"""
-    try:
-        target_column = request.args.get('column')
-        target_table = request.args.get('table')
-        
-        if not target_column or not target_table:
-            return format_response(False, error="Column and table parameters are required")
-            
-        result = etl_manager.get_column_lineage(
-            target_column=target_column,
-            target_table=target_table
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error getting column lineage: {e}")
-        return format_response(False, error=str(e))
-
-@api.route('/etl/lineage', methods=['POST'])
-def track_data_lineage():
-    """Track data lineage for a specific data field or table"""
-    try:
-        data = request.json
-        source_system = data.get('source_system')
-        source_table = data.get('source_table')
-        source_column = data.get('source_column')
-        target_table = data.get('target_table')
-        target_column = data.get('target_column')
-        transformation = data.get('transformation')
-        job_id = data.get('job_id')
-        
-        if not source_system or not source_table or not target_table:
-            return format_response(False, error="Missing required fields")
-            
-        result = etl_manager.track_data_lineage(
-            source_system=source_system,
-            source_table=source_table,
-            source_column=source_column,
-            target_table=target_table,
-            target_column=target_column,
-            transformation=transformation,
-            job_id=job_id
-        )
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logger.error(f"Error tracking data lineage: {e}")
-        return format_response(False, error=str(e))
+@etl_bp.route('/job-types', methods=['GET'])
+def get_job_types():
+    """Get available job types"""
+    # In a real application, this might be dynamic or stored in a database
+    job_types = [
+        {'id': 'FULL_LOAD', 'name': 'Full Load', 'description': 'Process all data from the source system'},
+        {'id': 'INCREMENTAL', 'name': 'Incremental Load', 'description': 'Process only new or changed data since the last run'},
+        {'id': 'VALIDATION', 'name': 'Data Validation', 'description': 'Validate data quality without loading'},
+        {'id': 'TRANSFORMATION', 'name': 'Data Transformation', 'description': 'Transform existing data in the warehouse'}
+    ]
+    
+    return jsonify({
+        'success': True,
+        'job_types': job_types
+    })

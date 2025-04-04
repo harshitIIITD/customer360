@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import uuid
 import schedule
+import random
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple, Union
 from croniter import croniter  # For cron expression parsing
@@ -274,442 +275,631 @@ class ETLProcessManager:
         except Exception as e:
             logger.error(f"Error processing scheduled jobs: {e}")
             
-    def create_scheduled_job(self, process_name: str, job_type: str,
-                             source_system: Optional[int] = None, target_system: Optional[str] = None,
-                             cron_schedule: str = "0 0 * * *") -> Dict[str, Any]:
+    def submit_job(self, job_name: str, job_type: str, source_id: Optional[int] = None,
+                  created_by: Optional[str] = None) -> Dict[str, Any]:
         """
-        Create a new scheduled ETL job.
+        Submit a new ETL job for processing.
         
         Args:
-            process_name: Name of the ETL process
-            job_type: Type of ETL job to run
-            source_system: Optional ID of the source system
-            target_system: Optional name of target system
-            cron_schedule: Cron expression for the schedule (default: daily at midnight)
+            job_name: Name of the ETL job
+            job_type: Type of ETL job (one of the JOB_TYPE_* constants)
+            source_id: Optional ID of the source system
+            created_by: Optional identifier of who created this job
             
         Returns:
-            Dictionary with operation result
+            Dictionary with job information
         """
         try:
-            # Generate a unique process ID
-            process_id = str(uuid.uuid4())
+            # Generate a unique job ID
+            job_id = str(uuid.uuid4())
+            current_time = datetime.now()
             
             conn = get_db_connection(self.db_path)
             cursor = conn.cursor()
             
-            # Insert the scheduled job
+            # Insert the new job
             cursor.execute("""
-                INSERT INTO etl_scheduled_jobs (
-                    process_id, process_name, job_type, source_system,
-                    target_system, cron_schedule, is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (process_id, process_name, job_type, source_system,
-                 target_system, cron_schedule, True))
-            
-            conn.commit()
-            
-            # Return the created scheduled job
-            cursor.execute("""
-                SELECT * FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
-            
-            scheduled_job = dict(cursor.fetchone())
-            conn.close()
-            
-            return {
-                "success": True,
-                "process_id": process_id,
-                "scheduled_job": scheduled_job
-            }
-            
-        except Exception as e:
-            logger.error(f"Error creating scheduled job: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-            
-    def update_scheduled_job(self, process_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Update an existing scheduled ETL job.
-        
-        Args:
-            process_id: ID of the scheduled job to update
-            updates: Dictionary of fields to update
-            
-        Returns:
-            Dictionary with operation result
-        """
-        try:
-            conn = get_db_connection(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if the scheduled job exists
-            cursor.execute("""
-                SELECT COUNT(*) FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
-            
-            if cursor.fetchone()[0] == 0:
-                conn.close()
-                return {
-                    "success": False,
-                    "error": f"Scheduled job not found: {process_id}"
-                }
-                
-            # Build the UPDATE query dynamically based on provided fields
-            allowed_fields = {
-                'process_name', 'job_type', 'source_system', 
-                'target_system', 'cron_schedule', 'is_active'
-            }
-            
-            # Filter out fields that aren't in the allowed list
-            valid_updates = {k: v for k, v in updates.items() if k in allowed_fields}
-            
-            if not valid_updates:
-                conn.close()
-                return {
-                    "success": False,
-                    "error": "No valid fields to update"
-                }
-                
-            # Build the SQL query
-            sql_parts = []
-            params = []
-            
-            for field, value in valid_updates.items():
-                sql_parts.append(f"{field} = ?")
-                params.append(value)
-                
-            # Add the process_id as the last parameter
-            params.append(process_id)
-            
-            # Execute the update
-            cursor.execute(f"""
-                UPDATE etl_scheduled_jobs
-                SET {', '.join(sql_parts)}
-                WHERE process_id = ?
-            """, params)
-            
-            conn.commit()
-            
-            # Return the updated scheduled job
-            cursor.execute("""
-                SELECT * FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
-            
-            updated_job = dict(cursor.fetchone())
-            conn.close()
-            
-            return {
-                "success": True,
-                "scheduled_job": updated_job
-            }
-            
-        except Exception as e:
-            logger.error(f"Error updating scheduled job: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-            
-    def delete_scheduled_job(self, process_id: str) -> Dict[str, Any]:
-        """
-        Delete a scheduled ETL job.
-        
-        Args:
-            process_id: ID of the scheduled job to delete
-            
-        Returns:
-            Dictionary with operation result
-        """
-        try:
-            conn = get_db_connection(self.db_path)
-            cursor = conn.cursor()
-            
-            # Check if the scheduled job exists
-            cursor.execute("""
-                SELECT COUNT(*) FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
-            
-            if cursor.fetchone()[0] == 0:
-                conn.close()
-                return {
-                    "success": False,
-                    "error": f"Scheduled job not found: {process_id}"
-                }
-                
-            # Delete the scheduled job
-            cursor.execute("""
-                DELETE FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
+                INSERT INTO etl_jobs (
+                    job_id, job_name, job_type, source_id, status,
+                    created_by, start_time, created_at, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (job_id, job_name, job_type, source_id, self.STATUS_QUEUED,
+                 created_by, current_time, current_time, current_time))
             
             conn.commit()
             conn.close()
             
+            # Start job execution in a separate thread
+            thread = threading.Thread(
+                target=self._execute_job,
+                args=(job_id,),
+                daemon=True
+            )
+            thread.start()
+            
+            # Store thread reference
+            self.job_threads[job_id] = thread
+            
+            logger.info(f"Job submitted: {job_id} - {job_name}")
+            
             return {
                 "success": True,
-                "message": f"Scheduled job deleted: {process_id}"
+                "job_id": job_id,
+                "job_name": job_name,
+                "status": self.STATUS_QUEUED
             }
             
         except Exception as e:
-            logger.error(f"Error deleting scheduled job: {e}")
+            logger.error(f"Error submitting job: {e}")
             return {
                 "success": False,
                 "error": str(e)
             }
             
-    def get_scheduled_jobs(self, is_active: Optional[bool] = None) -> Dict[str, Any]:
+    def _execute_job(self, job_id: str) -> None:
         """
-        Get all scheduled ETL jobs, optionally filtered by active status.
+        Execute an ETL job in a separate thread.
         
         Args:
-            is_active: Optional filter for active/inactive jobs
-            
-        Returns:
-            Dictionary with scheduled jobs
+            job_id: ID of the job to execute
         """
         try:
             conn = get_db_connection(self.db_path)
             cursor = conn.cursor()
             
-            query = "SELECT * FROM etl_scheduled_jobs"
-            params = []
-            
-            # Apply filter if provided
-            if is_active is not None:
-                query += " WHERE is_active = ?"
-                params.append(is_active)
-                
-            # Execute the query
-            cursor.execute(query, params)
-            
-            scheduled_jobs = [dict(job) for job in cursor.fetchall()]
-            conn.close()
-            
-            return {
-                "success": True,
-                "scheduled_jobs": scheduled_jobs
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting scheduled jobs: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-            
-    def trigger_scheduled_job(self, process_id: str) -> Dict[str, Any]:
-        """
-        Manually trigger a scheduled ETL job.
-        
-        Args:
-            process_id: ID of the scheduled job to trigger
-            
-        Returns:
-            Dictionary with job execution details
-        """
-        try:
-            conn = get_db_connection(self.db_path)
-            cursor = conn.cursor()
-            
-            # Get the scheduled job details
+            # Update job status to running
             cursor.execute("""
-                SELECT * FROM etl_scheduled_jobs WHERE process_id = ?
-            """, (process_id,))
+                UPDATE etl_jobs
+                SET status = ?, last_updated = ?
+                WHERE job_id = ?
+            """, (self.STATUS_RUNNING, datetime.now(), job_id))
+            
+            conn.commit()
+            
+            # Get job details
+            cursor.execute("""
+                SELECT job_name, job_type, source_id FROM etl_jobs WHERE job_id = ?
+            """, (job_id,))
             
             job = cursor.fetchone()
-            
             if not job:
-                conn.close()
-                return {
-                    "success": False,
-                    "error": f"Scheduled job not found: {process_id}"
-                }
+                logger.error(f"Job not found: {job_id}")
+                return
                 
-            job = dict(job)
+            job_name = job['job_name']
+            job_type = job['job_type']
+            source_id = job['source_id']
             
-            # Create a new ETL job based on the scheduled job details
-            job_name = f"{job['process_name']}_manual_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            # Log start of job execution
+            self._add_job_log(conn, job_id, None, "INFO", f"Started job execution: {job_name}")
             
-            result = self.submit_job(
-                job_name=job_name,
-                job_type=job['job_type'],
-                source_id=job['source_system'],
-                created_by=f"scheduler:{process_id}"
+            # Create job steps based on job type
+            steps = []
+            
+            if job_type == self.JOB_TYPE_FULL_ETL:
+                steps = [
+                    {"name": "Extract Data", "type": "extract", "order": 1},
+                    {"name": "Transform Data", "type": "transform", "order": 2},
+                    {"name": "Load Data", "type": "load", "order": 3}
+                ]
+            elif job_type == self.JOB_TYPE_EXTRACT:
+                steps = [{"name": "Extract Data", "type": "extract", "order": 1}]
+            elif job_type == self.JOB_TYPE_TRANSFORM:
+                steps = [{"name": "Transform Data", "type": "transform", "order": 1}]
+            elif job_type == self.JOB_TYPE_LOAD:
+                steps = [{"name": "Load Data", "type": "load", "order": 1}]
+            
+            # Create and execute each step
+            total_records_processed = 0
+            total_records_failed = 0
+            error_encountered = False
+            
+            for step_index, step in enumerate(steps):
+                step_id = str(uuid.uuid4())
+                step_name = step["name"]
+                step_type = step["type"]
+                step_order = step["order"]
+                step_start_time = datetime.now()
+                
+                # Insert step record
+                cursor.execute("""
+                    INSERT INTO etl_job_steps (
+                        job_id, step_id, step_name, step_type, step_order,
+                        status, start_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (job_id, step_id, step_name, step_type, step_order, 
+                      self.STATUS_RUNNING, step_start_time))
+                
+                conn.commit()
+                
+                # Log start of step
+                self._add_job_log(
+                    conn, job_id, step_id, "INFO", 
+                    f"Started step {step_order}: {step_name}"
+                )
+                
+                try:
+                    # Here we would normally call specific processing logic
+                    # For now, we'll simulate processing with random success/failure
+                    
+                    # Simulate processing time
+                    processing_time = random.uniform(1, 5)
+                    time.sleep(processing_time)
+                    
+                    # Simulate processing records
+                    records_processed = random.randint(100, 5000)
+                    records_failed = random.randint(0, int(records_processed * 0.05))  # 0-5% failure rate
+                    
+                    # Update job progress
+                    progress_percentage = ((step_index + 1) / len(steps)) * 100
+                    
+                    # Update etl_jobs table with progress
+                    cursor.execute("""
+                        UPDATE etl_jobs
+                        SET progress_percentage = ?,
+                            records_processed = records_processed + ?,
+                            records_failed = records_failed + ?,
+                            last_updated = ?
+                        WHERE job_id = ?
+                    """, (progress_percentage, records_processed, records_failed, 
+                          datetime.now(), job_id))
+                    
+                    # Update step as completed
+                    step_end_time = datetime.now()
+                    cursor.execute("""
+                        UPDATE etl_job_steps
+                        SET status = ?,
+                            records_processed = ?,
+                            records_failed = ?,
+                            end_time = ?
+                        WHERE step_id = ?
+                    """, (self.STATUS_COMPLETED, records_processed, records_failed, 
+                          step_end_time, step_id))
+                    
+                    conn.commit()
+                    
+                    # Log step completion
+                    self._add_job_log(
+                        conn, job_id, step_id, "INFO",
+                        f"Completed step {step_order}: {step_name}. Processed: {records_processed}, Failed: {records_failed}"
+                    )
+                    
+                    # Update totals
+                    total_records_processed += records_processed
+                    total_records_failed += records_failed
+                    
+                except Exception as e:
+                    error_message = f"Error in step {step_order} ({step_name}): {str(e)}"
+                    logger.error(error_message)
+                    
+                    # Update step as error
+                    step_end_time = datetime.now()
+                    cursor.execute("""
+                        UPDATE etl_job_steps
+                        SET status = ?, end_time = ?
+                        WHERE step_id = ?
+                    """, (self.STATUS_ERROR, step_end_time, step_id))
+                    
+                    # Log error
+                    self._add_job_log(
+                        conn, job_id, step_id, "ERROR", error_message
+                    )
+                    
+                    error_encountered = True
+                    break  # Stop processing remaining steps
+            
+            # Complete the job
+            job_end_time = datetime.now()
+            job_status = self.STATUS_ERROR if error_encountered else self.STATUS_COMPLETED
+            
+            cursor.execute("""
+                UPDATE etl_jobs
+                SET status = ?,
+                    progress_percentage = ?,
+                    records_processed = ?,
+                    records_failed = ?,
+                    end_time = ?,
+                    last_updated = ?
+                WHERE job_id = ?
+            """, (job_status, 100 if not error_encountered else None,
+                 total_records_processed, total_records_failed,
+                 job_end_time, job_end_time, job_id))
+            
+            conn.commit()
+            
+            # Log job completion
+            self._add_job_log(
+                conn, job_id, None, "INFO" if not error_encountered else "ERROR",
+                f"Job completed with status {job_status}. Total records processed: {total_records_processed}, failed: {total_records_failed}"
             )
             
             conn.close()
             
-            return result
-            
         except Exception as e:
-            logger.error(f"Error triggering scheduled job: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            error_message = f"Error executing job {job_id}: {str(e)}"
+            logger.error(error_message)
             
-    def track_data_lineage(self, source_system: str, target_system: str, 
-                           dataset_name: str, transformation_type: str,
-                           job_id: Optional[str] = None) -> Dict[str, Any]:
+            try:
+                # Update job status to error
+                conn = get_db_connection(self.db_path)
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    UPDATE etl_jobs
+                    SET status = ?,
+                        error_message = ?,
+                        end_time = ?,
+                        last_updated = ?
+                    WHERE job_id = ?
+                """, (self.STATUS_ERROR, str(e), datetime.now(), datetime.now(), job_id))
+                
+                # Add error log
+                self._add_job_log(conn, job_id, None, "ERROR", error_message)
+                
+                conn.commit()
+                conn.close()
+            except Exception as inner_error:
+                logger.error(f"Failed to update job error status: {inner_error}")
+
+    def _add_job_log(self, conn, job_id: str, step_id: Optional[str], 
+                    log_level: str, message: str) -> None:
         """
-        Track data lineage for ETL operations.
+        Add a log entry for a job or job step.
         
         Args:
-            source_system: Source system name
-            target_system: Target system name
-            dataset_name: Name of the dataset being processed
-            transformation_type: Type of transformation applied
-            job_id: Optional job ID to associate with this lineage entry
-            
-        Returns:
-            Dictionary with operation result
+            conn: Database connection
+            job_id: ID of the job
+            step_id: Optional ID of the job step
+            log_level: Log level (INFO, WARNING, ERROR)
+            message: Log message
         """
         try:
-            # Generate a unique lineage ID
-            lineage_id = str(uuid.uuid4())
-            
-            conn = get_db_connection(self.db_path)
             cursor = conn.cursor()
             
-            # Insert the data lineage record
             cursor.execute("""
-                INSERT INTO data_lineage (
-                    lineage_id, source_system, target_system, 
-                    dataset_name, transformation_type, job_id,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (lineage_id, source_system, target_system, 
-                 dataset_name, transformation_type, job_id,
-                 datetime.now(), datetime.now()))
+                INSERT INTO etl_job_logs (job_id, step_id, log_level, message)
+                VALUES (?, ?, ?, ?)
+            """, (job_id, step_id, log_level, message))
             
             conn.commit()
             
-            # Return the created lineage record
-            cursor.execute("""
-                SELECT * FROM data_lineage WHERE lineage_id = ?
-            """, (lineage_id,))
-            
-            lineage = dict(cursor.fetchone())
-            conn.close()
-            
-            return {
-                "success": True,
-                "lineage_id": lineage_id,
-                "lineage": lineage
-            }
-            
         except Exception as e:
-            logger.error(f"Error tracking data lineage: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-            
-    def get_data_lineage(self, dataset_name: Optional[str] = None, 
-                         source_system: Optional[str] = None) -> Dict[str, Any]:
+            logger.error(f"Error adding job log: {e}")
+
+    def get_job(self, job_id: str) -> Dict[str, Any]:
         """
-        Get data lineage information, optionally filtered by dataset or source system.
+        Get detailed information about a specific ETL job.
         
         Args:
-            dataset_name: Optional dataset name to filter by
-            source_system: Optional source system to filter by
+            job_id: ID of the job
             
         Returns:
-            Dictionary with data lineage records
+            Dictionary with job information or None if job not found
+        """
+        try:
+            conn = get_db_connection(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get job details
+            cursor.execute("""
+                SELECT * FROM etl_jobs WHERE job_id = ?
+            """, (job_id,))
+            
+            job = cursor.fetchone()
+            if not job:
+                return None
+                
+            job_dict = dict(job)
+            
+            # Get job steps
+            cursor.execute("""
+                SELECT * FROM etl_job_steps WHERE job_id = ? ORDER BY step_order
+            """, (job_id,))
+            
+            steps = [dict(row) for row in cursor.fetchall()]
+            job_dict['steps'] = steps
+            
+            # Get job logs
+            cursor.execute("""
+                SELECT * FROM etl_job_logs WHERE job_id = ? ORDER BY timestamp DESC LIMIT 100
+            """, (job_id,))
+            
+            logs = [dict(row) for row in cursor.fetchall()]
+            job_dict['logs'] = logs
+            
+            conn.close()
+            return job_dict
+            
+        except Exception as e:
+            logger.error(f"Error getting job details: {e}")
+            return None
+
+    def get_active_jobs(self) -> List[Dict[str, Any]]:
+        """
+        Get all currently active (running or queued) ETL jobs.
+        
+        Returns:
+            List of dictionaries with job information
+        """
+        try:
+            conn = get_db_connection(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Get active jobs
+            cursor.execute("""
+                SELECT * FROM etl_jobs 
+                WHERE status IN (?, ?)
+                ORDER BY start_time DESC
+            """, (self.STATUS_RUNNING, self.STATUS_QUEUED))
+            
+            jobs = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            
+            return jobs
+            
+        except Exception as e:
+            logger.error(f"Error getting active jobs: {e}")
+            return []
+
+    def get_job_history(self, limit: int = 20, offset: int = 0, 
+                       status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get ETL job history with pagination and optional filtering.
+        
+        Args:
+            limit: Maximum number of jobs to return
+            offset: Number of jobs to skip for pagination
+            status_filter: Optional job status to filter by
+            
+        Returns:
+            List of dictionaries with job information
+        """
+        try:
+            conn = get_db_connection(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Base query
+            query = "SELECT * FROM etl_jobs"
+            params = []
+            
+            # Add status filter if provided
+            if status_filter:
+                query += " WHERE status = ?"
+                params.append(status_filter)
+                
+            # Add order by and pagination
+            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            jobs = [dict(row) for row in cursor.fetchall()]
+            
+            conn.close()
+            return jobs
+            
+        except Exception as e:
+            logger.error(f"Error getting job history: {e}")
+            return []
+
+    def create_job(self, job_name: str, job_type: str, source_id: Optional[int] = None,
+                  created_by: Optional[str] = None, parameters: Optional[Dict] = None) -> str:
+        """
+        Create a new ETL job and queue it for processing.
+        
+        Args:
+            job_name: Name of the ETL job
+            job_type: Type of ETL job (one of the JOB_TYPE_* constants)
+            source_id: Optional ID of the source system
+            created_by: Optional identifier of who created this job
+            parameters: Optional parameters for the job
+            
+        Returns:
+            Job ID if successful, None otherwise
+        """
+        try:
+            # Generate a unique job ID
+            job_id = str(uuid.uuid4())
+            current_time = datetime.now()
+            
+            conn = get_db_connection(self.db_path)
+            cursor = conn.cursor()
+            
+            # Insert the new job
+            cursor.execute("""
+                INSERT INTO etl_jobs (
+                    job_id, job_name, job_type, source_id, status,
+                    created_by, start_time, created_at, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (job_id, job_name, job_type, source_id, self.STATUS_QUEUED,
+                 created_by, current_time, current_time, current_time))
+            
+            conn.commit()
+            
+            # Store parameters if provided (would need an additional table in a real implementation)
+            if parameters:
+                # For demonstration purposes, we'll just log them
+                self._add_job_log(conn, job_id, None, "INFO", f"Job parameters: {json.dumps(parameters)}")
+            
+            conn.close()
+            
+            # Start job execution in a separate thread
+            thread = threading.Thread(
+                target=self._execute_job,
+                args=(job_id,),
+                daemon=True
+            )
+            thread.start()
+            
+            # Store thread reference
+            self.job_threads[job_id] = thread
+            
+            logger.info(f"Job created: {job_id} - {job_name}")
+            
+            return job_id
+            
+        except Exception as e:
+            logger.error(f"Error creating job: {e}")
+            return None
+
+    def update_job_status(self, job_id: str, status: str) -> bool:
+        """
+        Update the status of an ETL job.
+        
+        Args:
+            job_id: ID of the job to update
+            status: New job status
+            
+        Returns:
+            True if successful, False otherwise
         """
         try:
             conn = get_db_connection(self.db_path)
             cursor = conn.cursor()
             
-            query = "SELECT * FROM data_lineage"
-            params = []
-            where_clauses = []
+            # Check if job exists
+            cursor.execute("SELECT id FROM etl_jobs WHERE job_id = ?", (job_id,))
+            if not cursor.fetchone():
+                conn.close()
+                return False
+                
+            current_time = datetime.now()
             
-            # Apply filters if provided
-            if dataset_name is not None:
-                where_clauses.append("dataset_name = ?")
-                params.append(dataset_name)
-                
-            if source_system is not None:
-                where_clauses.append("source_system = ?")
-                params.append(source_system)
-                
-            if where_clauses:
-                query += " WHERE " + " AND ".join(where_clauses)
-                
-            # Execute the query
-            cursor.execute(query, params)
+            # Update job status
+            cursor.execute("""
+                UPDATE etl_jobs
+                SET status = ?, last_updated = ?
+                WHERE job_id = ?
+            """, (status, current_time, job_id))
             
-            lineage_records = [dict(record) for record in cursor.fetchall()]
+            # If job is cancelled, add a log entry
+            if status == self.STATUS_CANCELLED:
+                self._add_job_log(conn, job_id, None, "WARNING", "Job cancelled by user")
+                
+                # If job has an end_time that is None, set it
+                cursor.execute("""
+                    UPDATE etl_jobs
+                    SET end_time = ?
+                    WHERE job_id = ? AND end_time IS NULL
+                """, (current_time, job_id))
+            
+            conn.commit()
             conn.close()
             
-            return {
-                "success": True,
-                "lineage_records": lineage_records
-            }
+            return True
             
         except Exception as e:
-            logger.error(f"Error getting data lineage: {e}")
-            return {
-                "success": False,
-                "error": str(e)
-            }
-            
-    def build_data_lineage_graph(self, dataset_name: Optional[str] = None) -> Dict[str, Any]:
+            logger.error(f"Error updating job status: {e}")
+            return False
+
+    def get_job_statistics(self, time_period: Optional[str] = None) -> Dict[str, Any]:
         """
-        Build a graph representation of data lineage for visualization.
+        Get ETL job statistics for different time periods.
         
         Args:
-            dataset_name: Optional dataset name to filter by
+            time_period: Time period to get statistics for ('today', 'week', 'month', 'all')
             
         Returns:
-            Dictionary with nodes and edges for graph visualization
+            Dictionary with job statistics
         """
         try:
-            lineage_data = self.get_data_lineage(dataset_name=dataset_name)
+            conn = get_db_connection(self.db_path)
+            cursor = conn.cursor()
             
-            if not lineage_data.get("success"):
-                return lineage_data
-                
-            lineage_records = lineage_data.get("lineage_records", [])
+            # Build date filter based on time_period
+            date_filter = ""
+            params = []
             
-            # Build nodes and edges for graph visualization
-            nodes = set()
-            edges = []
+            if time_period == 'today':
+                date_filter = "WHERE DATE(created_at) = DATE('now')"
+            elif time_period == 'week':
+                date_filter = "WHERE DATE(created_at) >= DATE('now', '-7 days')"
+            elif time_period == 'month':
+                date_filter = "WHERE DATE(created_at) >= DATE('now', '-30 days')"
             
-            for record in lineage_records:
-                source = record["source_system"]
-                target = record["target_system"]
-                dataset = record["dataset_name"]
-                transform = record["transformation_type"]
+            # Get total job counts by status
+            cursor.execute(f"""
+                SELECT status, COUNT(*) as count
+                FROM etl_jobs
+                {date_filter}
+                GROUP BY status
+            """, params)
+            
+            status_counts = {}
+            for row in cursor.fetchall():
+                status_counts[row[0]] = row[1]
                 
-                # Add nodes
-                nodes.add(source)
-                nodes.add(target)
+            # Get average processing time for completed jobs
+            cursor.execute(f"""
+                SELECT AVG(JULIANDAY(end_time) - JULIANDAY(start_time)) * 86400 as avg_seconds
+                FROM etl_jobs
+                WHERE status = ? AND end_time IS NOT NULL {date_filter}
+            """, [self.STATUS_COMPLETED] + params)
+            
+            avg_processing_time = cursor.fetchone()[0] or 0
+            
+            # Get total records processed and failed
+            cursor.execute(f"""
+                SELECT 
+                    SUM(records_processed) as total_processed,
+                    SUM(records_failed) as total_failed
+                FROM etl_jobs
+                {date_filter}
+            """, params)
+            
+            row = cursor.fetchone()
+            total_processed = row[0] or 0
+            total_failed = row[1] or 0
+            
+            # Get average records processed per job
+            cursor.execute(f"""
+                SELECT AVG(records_processed) as avg_processed
+                FROM etl_jobs
+                WHERE records_processed > 0 {date_filter}
+            """, params)
+            
+            avg_records_processed = cursor.fetchone()[0] or 0
+            
+            # Get job counts by type
+            cursor.execute(f"""
+                SELECT job_type, COUNT(*) as count
+                FROM etl_jobs
+                {date_filter}
+                GROUP BY job_type
+            """, params)
+            
+            job_type_counts = {}
+            for row in cursor.fetchall():
+                job_type_counts[row[0]] = row[1]
                 
-                # Add edge
-                edges.append({
-                    "source": source,
-                    "target": target,
-                    "dataset": dataset,
-                    "transformation": transform,
-                    "lineage_id": record["lineage_id"]
-                })
-                
+            conn.close()
+            
+            # Build final statistics object
+            stats = {
+                'time_period': time_period or 'all',
+                'total_jobs': sum(status_counts.values()) if status_counts else 0,
+                'status_counts': status_counts,
+                'job_type_counts': job_type_counts,
+                'avg_processing_time_seconds': avg_processing_time,
+                'total_records_processed': total_processed,
+                'total_records_failed': total_failed,
+                'avg_records_processed': avg_records_processed,
+                'failure_rate': (total_failed / total_processed * 100) if total_processed > 0 else 0,
+                'success_rate': ((total_processed - total_failed) / total_processed * 100) if total_processed > 0 else 0
+            }
+            
             return {
-                "success": True,
-                "graph": {
-                    "nodes": list(nodes),
-                    "edges": edges
-                }
+                'success': True,
+                'statistics': stats
             }
             
         except Exception as e:
-            logger.error(f"Error building data lineage graph: {e}")
+            logger.error(f"Error getting job statistics: {e}")
             return {
-                "success": False,
-                "error": str(e)
+                'success': False,
+                'error': str(e)
             }
 
 if __name__ == "__main__":
