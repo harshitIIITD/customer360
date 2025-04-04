@@ -2,40 +2,47 @@
 
 # Database configuration
 database:
-  path: customer360.db  # Path to the SQLite database file
-  schema_path: database/schema.sql  # Path to the database schema file
+  path: "data/customer360.db"  # Full path to the SQLite database file
+  schema_path: "database/schema.sql"  # Full path to the database schema file
   temperature: 0.2
   max_tokens: 2000
+
+# LLM provider configuration
+llm:
+  provider: "openai"
+  temperature: 0.2
+  max_tokens: 2000
+  api_type: "open_ai"
 
 # Agent Settings
 agents:
   data_steward:
     enabled: true
-    model_name: "llama3"
+    model_name: "gpt-4"
     description: "identifying, validating, and documenting data sources"
     
   domain_expert:
     enabled: true
-    model_name: "llama3"
+    model_name: "gpt-4"
     description: "providing business context and requirements for banking data"
     
   data_engineer:
     enabled: true
-    model_name: "llama3"
+    model_name: "gpt-4"
     description: "implementing data extraction, transformation, and loading processes"
     
   mapping:
     enabled: true
-    model_name: "llama3"
+    model_name: "gpt-4"
     description: "automating source-to-target data attribute mapping"
     
   certification:
     enabled: true
-    model_name: "llama3"
+    model_name: "gpt-4"
     description: "facilitating and documenting the data product certification process"
 
 # Database Settings
-database:
+database_settings:
   path: "data/customer360.db"
   type: "sqlite"
 
