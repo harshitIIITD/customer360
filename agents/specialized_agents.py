@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Union
 import pandas as pd
+import re
 
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -302,6 +303,14 @@ class MappingAgent(BaseAgent):
                 config: Optional[Dict[str, Any]] = None):
         """Initialize the Mapping Agent."""
         super().__init__(agent_id, name, description, config)
+        self._init_ml_components()
+    
+    def _init_ml_components(self):
+        """Initialize ML components for enhanced mapping suggestions."""
+        # Initialize embeddings dictionary for all attributes
+        self.attribute_embeddings = {}
+        # Track mapping history to learn from past suggestions
+        self.mapping_history = []
     
     def get_capabilities(self) -> List[Dict[str, Any]]:
         """Get capabilities supported by this agent."""
@@ -346,6 +355,22 @@ class MappingAgent(BaseAgent):
                 "parameters": {
                     "source_id": "ID of the source system"
                 }
+            },
+            {
+                "name": "ml_suggest_mappings",
+                "description": "Suggest mappings using machine learning techniques",
+                "parameters": {
+                    "source_id": "ID of the source system"
+                }
+            },
+            {
+                "name": "learn_from_feedback",
+                "description": "Learn from user feedback on mapping suggestions",
+                "parameters": {
+                    "mapping_id": "ID of the mapping to learn from",
+                    "is_approved": "Whether the mapping was approved",
+                    "feedback": "Optional feedback comments"
+                }
             }
         ]
     
@@ -365,8 +390,15 @@ class MappingAgent(BaseAgent):
         Returns:
             Result of the mapping creation
         """
-        return add_data_mapping(source_system_id, source_attribute, 
+        result = add_data_mapping(source_system_id, source_attribute, 
                               target_attribute_id, transformation_logic, created_by)
+        
+        # Add to mapping history for ML learning
+        if result.get("success", False):
+            self._add_to_mapping_history(result.get("mapping_id"), source_system_id, 
+                                        source_attribute, target_attribute_id, True)
+        
+        return result
     
     def action_validate_mapping(self, mapping_id: int) -> Dict[str, Any]:
         """
@@ -546,7 +578,220 @@ class MappingAgent(BaseAgent):
             error_msg = f"Error suggesting mappings: {e}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
+
+    def action_ml_suggest_mappings(self, source_id: int) -> Dict[str, Any]:
+        """
+        Suggest mappings using machine learning techniques.
+        
+        This uses multiple strategies including:
+        1. Attribute name semantic similarity via embeddings
+        2. Data profiling pattern recognition
+        3. Historical mapping patterns
+        4. Data distribution analysis
+        
+        Args:
+            source_id: ID of the source system
+            
+        Returns:
+            List of suggested mappings with confidence scores
+        """
+        try:
+            # Get source system attributes
+            source_result = extract_attributes(source_id)
+            
+            if not source_result.get("success", False):
+                return source_result
+                
+            source_attributes = source_result.get("attributes", [])
+            
+            if not source_attributes:
+                return {
+                    "success": False,
+                    "error": "No attributes found for the source system"
+                }
+            
+            # Get target attributes
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM customer_attributes")
+            target_attributes = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            
+            # Update embeddings for new attributes
+            self._update_attribute_embeddings(source_attributes, target_attributes)
+            
+            # Use multiple techniques to generate mapping suggestions
+            suggested_mappings = []
+            
+            for source_attr in source_attributes:
+                source_name = source_attr.get("name", "").lower()
+                
+                # Extract just the column name without table prefix
+                if "." in source_name:
+                    source_col = source_name.split(".")[-1]
+                else:
+                    source_col = source_name
+                
+                # Get sample data for this attribute for profile-based matching
+                sample_result = self._get_attribute_profile(source_id, source_attr.get("name"))
+                
+                # Calculate scores for each target attribute using multiple techniques
+                candidate_matches = []
+                
+                for target_attr in target_attributes:
+                    target_name = target_attr.get("attribute_name", "").lower()
+                    
+                    # Calculate scores using different techniques
+                    name_sim_score = self._calculate_similarity(source_col, target_name)
+                    embedding_score = self._calculate_embedding_similarity(source_col, target_name)
+                    
+                    # Look at historical mappings
+                    history_score = self._get_history_similarity(source_col, target_attr.get("id"))
+                    
+                    # Data profile compatibility
+                    profile_score = self._calculate_profile_compatibility(
+                        sample_result.get("profile", {}),
+                        target_attr.get("data_type")
+                    )
+                    
+                    # Weight and combine the scores
+                    weighted_score = (
+                        name_sim_score * 0.3 + 
+                        embedding_score * 0.4 + 
+                        history_score * 0.2 + 
+                        profile_score * 0.1
+                    )
+                    
+                    if weighted_score > 0.3:  # Minimum threshold
+                        candidate_matches.append({
+                            "target_attribute": target_attr,
+                            "score": weighted_score,
+                            "name_sim_score": name_sim_score,
+                            "embedding_score": embedding_score,
+                            "history_score": history_score,
+                            "profile_score": profile_score
+                        })
+                
+                # Sort candidates by score and get top matches
+                candidate_matches.sort(key=lambda x: x["score"], reverse=True)
+                top_matches = candidate_matches[:3]  # Get top 3 matches for each source attribute
+                
+                for match in top_matches:
+                    target_attr = match["target_attribute"]
+                    
+                    # Generate transformation logic
+                    transformation_logic = self._ml_generate_transformation(
+                        source_attr, target_attr, match["score"]
+                    )
+                    
+                    suggested_mappings.append({
+                        "source_system_id": source_id,
+                        "source_attribute": source_attr.get("name"),
+                        "target_attribute_id": target_attr.get("id"),
+                        "target_attribute_name": target_attr.get("attribute_name"),
+                        "confidence_score": match["score"],
+                        "component_scores": {
+                            "name_similarity": match["name_sim_score"],
+                            "semantic_similarity": match["embedding_score"],
+                            "historical_patterns": match["history_score"],
+                            "data_compatibility": match["profile_score"]
+                        },
+                        "transformation_logic": transformation_logic
+                    })
+            
+            # Sort by confidence score
+            suggested_mappings = sorted(
+                suggested_mappings,
+                key=lambda x: x.get("confidence_score", 0),
+                reverse=True
+            )
+            
+            return {
+                "success": True,
+                "source_system_id": source_id,
+                "source_system_name": source_result.get("source_name"),
+                "suggested_mappings": suggested_mappings,
+                "count": len(suggested_mappings),
+                "message": f"Generated {len(suggested_mappings)} ML-enhanced mapping suggestions"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error suggesting mappings with ML: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
     
+    def action_learn_from_feedback(self, mapping_id: int, is_approved: bool, 
+                                feedback: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Learn from user feedback on mapping suggestions.
+        
+        Args:
+            mapping_id: ID of the mapping to learn from
+            is_approved: Whether the mapping was approved
+            feedback: Optional feedback comments
+            
+        Returns:
+            Result of the learning process
+        """
+        try:
+            # Get mapping details from the database
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    m.*,
+                    s.system_name,
+                    ca.attribute_name
+                FROM data_mappings m
+                JOIN source_systems s ON m.source_system_id = s.id
+                JOIN customer_attributes ca ON m.target_attribute_id = ca.id
+                WHERE m.id = ?
+            """, (mapping_id,))
+            
+            mapping = cursor.fetchone()
+            conn.close()
+            
+            if not mapping:
+                return {"success": False, "error": f"Mapping with ID {mapping_id} not found"}
+                
+            mapping_dict = dict(mapping)
+            
+            # Add to mapping history with feedback
+            self._add_to_mapping_history(
+                mapping_id, 
+                mapping_dict["source_system_id"],
+                mapping_dict["source_attribute"],
+                mapping_dict["target_attribute_id"],
+                is_approved,
+                feedback
+            )
+            
+            # If approved, reinforce the learning by updating embeddings
+            if is_approved:
+                # Update the attribute embeddings to strengthen this match
+                source_attr = mapping_dict["source_attribute"]
+                if "." in source_attr:
+                    source_col = source_attr.split(".")[-1]
+                else:
+                    source_col = source_attr
+                    
+                self._strengthen_embedding_association(
+                    source_col, mapping_dict["attribute_name"]
+                )
+            
+            return {
+                "success": True,
+                "mapping_id": mapping_id,
+                "is_approved": is_approved,
+                "learned": True,
+                "message": "Feedback processed and incorporated into learning model"
+            }
+        except Exception as e:
+            error_msg = f"Error learning from mapping feedback: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+
     def _calculate_similarity(self, source_name: str, target_name: str) -> float:
         """
         Calculate similarity between source and target attribute names.
@@ -592,7 +837,318 @@ class MappingAgent(BaseAgent):
             return 0.5 + (len(common_words) / max(len(source_words), len(target_words)) * 0.3)
             
         return 0.0
+    
+    def _update_attribute_embeddings(self, source_attributes, target_attributes):
+        """
+        Update embeddings for attribute names.
         
+        In a real system, this would use a language model to generate embeddings.
+        This simplified version creates synthetic 'embeddings' based on words.
+        
+        Args:
+            source_attributes: List of source attributes
+            target_attributes: List of target attributes
+        """
+        # Simplified embedding generation - in a real system, use actual embeddings
+        for attr in source_attributes:
+            name = attr.get("name", "")
+            if "." in name:
+                name = name.split(".")[-1]  # Use only the column part
+                
+            # Create a synthetic embedding (simplified)
+            words = set(name.lower().replace("_", " ").split())
+            self.attribute_embeddings[name] = words
+            
+        for attr in target_attributes:
+            name = attr.get("attribute_name", "")
+            # Create a synthetic embedding (simplified)
+            words = set(name.lower().replace("_", " ").split())
+            self.attribute_embeddings[name] = words
+    
+    def _calculate_embedding_similarity(self, source_name: str, target_name: str) -> float:
+        """
+        Calculate semantic similarity based on embeddings.
+        
+        Args:
+            source_name: Source attribute name
+            target_name: Target attribute name
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        # In a real system, this would use cosine similarity between embeddings
+        # This simplified version uses word overlap
+        
+        if source_name not in self.attribute_embeddings or target_name not in self.attribute_embeddings:
+            return self._calculate_similarity(source_name, target_name)
+            
+        source_words = self.attribute_embeddings[source_name]
+        target_words = self.attribute_embeddings[target_name]
+        
+        if not source_words or not target_words:
+            return 0.0
+            
+        # Calculate Jaccard similarity
+        intersection = len(source_words.intersection(target_words))
+        union = len(source_words.union(target_words))
+        
+        if union == 0:
+            return 0.0
+            
+        return intersection / union
+    
+    def _add_to_mapping_history(self, mapping_id, source_system_id, source_attribute, 
+                              target_attribute_id, is_approved, feedback=None):
+        """
+        Add a mapping to the learning history.
+        
+        Args:
+            mapping_id: ID of the mapping
+            source_system_id: ID of the source system
+            source_attribute: Name of the source attribute
+            target_attribute_id: ID of the target attribute
+            is_approved: Whether the mapping was approved
+            feedback: Optional feedback comments
+        """
+        # Extract column name without table prefix
+        if "." in source_attribute:
+            source_col = source_attribute.split(".")[-1]
+        else:
+            source_col = source_attribute
+            
+        # Add to history
+        self.mapping_history.append({
+            "mapping_id": mapping_id,
+            "source_system_id": source_system_id,
+            "source_attribute": source_col,
+            "target_attribute_id": target_attribute_id,
+            "is_approved": is_approved,
+            "feedback": feedback,
+            "timestamp": self._get_timestamp()
+        })
+        
+        # In a real system, you would also save this to a persistent store
+    
+    def _get_history_similarity(self, source_col: str, target_attribute_id: int) -> float:
+        """
+        Calculate similarity based on historical mappings.
+        
+        Args:
+            source_col: Source column name
+            target_attribute_id: ID of the target attribute
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        # Look for similar attributes in the mapping history
+        related_mappings = []
+        
+        for history in self.mapping_history:
+            if history["source_attribute"] == source_col and history["is_approved"]:
+                if history["target_attribute_id"] == target_attribute_id:
+                    # Direct match in history
+                    return 1.0
+                    
+            # Look for similar source attributes that were mapped to this target
+            if history["target_attribute_id"] == target_attribute_id and history["is_approved"]:
+                name_sim = self._calculate_similarity(history["source_attribute"], source_col)
+                if name_sim > 0.6:
+                    related_mappings.append(name_sim)
+        
+        # Return the highest similarity if any found
+        return max(related_mappings) if related_mappings else 0.0
+    
+    def _get_attribute_profile(self, source_id: int, attribute_name: str) -> Dict[str, Any]:
+        """
+        Get a data profile for an attribute (simplified version).
+        
+        Args:
+            source_id: ID of the source system
+            attribute_name: Name of the attribute
+            
+        Returns:
+            Data profile information
+        """
+        try:
+            # Get sample data
+            sample_result = get_sample_data(source_id, attribute_name)
+            
+            if not sample_result.get("success", False):
+                return {"success": False, "profile": {}}
+                
+            sample_data = sample_result.get("sample_data", [])
+            
+            if not sample_data:
+                return {"success": True, "profile": {}}
+                
+            # Extract values
+            if "." in attribute_name:
+                column_name = attribute_name.split(".")[-1]
+            else:
+                column_name = attribute_name
+                
+            values = [
+                record.get("sample_value") 
+                for record in sample_data 
+                if record.get("column_name") == column_name
+            ]
+            
+            # Basic profiling
+            profile = {}
+            
+            # Data type inference
+            numeric_count = sum(1 for v in values if v is not None and isinstance(v, (int, float)) or (isinstance(v, str) and v.replace('.', '', 1).isdigit()))
+            date_pattern = re.compile(r'^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$')
+            date_count = sum(1 for v in values if v is not None and isinstance(v, str) and date_pattern.match(v))
+            
+            total_non_null = sum(1 for v in values if v is not None)
+            
+            if total_non_null > 0:
+                if numeric_count / total_non_null > 0.8:
+                    profile["inferred_type"] = "NUMERIC"
+                elif date_count / total_non_null > 0.8:
+                    profile["inferred_type"] = "DATE"
+                else:
+                    profile["inferred_type"] = "TEXT"
+            
+            # Value statistics
+            profile["total_values"] = len(values)
+            profile["null_count"] = sum(1 for v in values if v is None)
+            profile["distinct_values"] = len(set(v for v in values if v is not None))
+            
+            if profile["total_values"] > 0:
+                profile["uniqueness"] = profile["distinct_values"] / (len(values) - profile["null_count"]) if len(values) > profile["null_count"] else 0
+            
+            # Check if looks like an ID field
+            profile["is_potential_id"] = "id" in column_name.lower() and profile["uniqueness"] > 0.9
+            
+            return {"success": True, "profile": profile}
+            
+        except Exception as e:
+            logger.warning(f"Error getting attribute profile: {e}")
+            return {"success": False, "profile": {}}
+    
+    def _calculate_profile_compatibility(self, profile: Dict[str, Any], target_data_type: str) -> float:
+        """
+        Calculate compatibility based on data profiles.
+        
+        Args:
+            profile: Data profile
+            target_data_type: Target data type
+            
+        Returns:
+            Compatibility score between 0 and 1
+        """
+        if not profile:
+            return 0.5  # Neutral score if no profile available
+            
+        # Check data type compatibility
+        inferred_type = profile.get("inferred_type")
+        
+        if inferred_type == "NUMERIC" and target_data_type in ["INTEGER", "REAL"]:
+            type_score = 1.0
+        elif inferred_type == "DATE" and target_data_type == "DATE":
+            type_score = 1.0
+        elif inferred_type == "TEXT" and target_data_type == "TEXT":
+            type_score = 1.0
+        elif not inferred_type:
+            type_score = 0.5  # Neutral if no inference
+        else:
+            type_score = 0.2  # Mismatch
+            
+        # Check other characteristics
+        uniqueness = profile.get("uniqueness", 0.5)
+        is_potential_id = profile.get("is_potential_id", False)
+        
+        # Higher score for ID fields mapping to ID targets
+        if is_potential_id and "id" in target_data_type.lower():
+            id_score = 1.0
+        else:
+            id_score = 0.5
+            
+        # Combine scores
+        return (type_score * 0.7 + id_score * 0.3)
+    
+    def _strengthen_embedding_association(self, source_col: str, target_name: str):
+        """
+        Strengthen the association between source and target attributes.
+        
+        Args:
+            source_col: Source column name
+            target_name: Target attribute name
+        """
+        # In a real ML system, this would update embedding weights
+        # In our simplified case, we'll merge the word sets
+        if source_col in self.attribute_embeddings and target_name in self.attribute_embeddings:
+            # Combine the word sets to strengthen association
+            combined_words = self.attribute_embeddings[source_col].union(
+                self.attribute_embeddings[target_name]
+            )
+            self.attribute_embeddings[source_col] = combined_words
+    
+    def _ml_generate_transformation(self, source_attr: Dict[str, Any], 
+                                  target_attr: Dict[str, Any],
+                                  confidence_score: float) -> str:
+        """
+        Generate transformation logic using ML techniques.
+        
+        Args:
+            source_attr: Source attribute details
+            target_attr: Target attribute details
+            confidence_score: Confidence score of the mapping
+            
+        Returns:
+            Transformation logic code
+        """
+        source_name = source_attr.get("name")
+        source_type = source_attr.get("data_type")
+        target_type = target_attr.get("data_type")
+        
+        # Simple direct reference if column name in table.column format
+        if "." in source_name:
+            table_name, column_name = source_name.split(".")
+            column_ref = f"df['{column_name}']"
+        else:
+            column_ref = f"df['{source_name}']"
+            
+        # High confidence transformations use more sophisticated logic
+        if confidence_score > 0.8:
+            # Generate transformation based on target data type with error handling
+            if target_type == "INTEGER":
+                return f"try:\n    pd.to_numeric({column_ref}, errors='coerce').astype('Int64')\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to INTEGER: {{e}}')\n    return pd.Series(dtype='Int64')"
+                
+            elif target_type == "REAL":
+                return f"try:\n    pd.to_numeric({column_ref}, errors='coerce').astype(float)\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to REAL: {{e}}')\n    return pd.Series(dtype=float)"
+                
+            elif target_type == "DATE":
+                return f"try:\n    pd.to_datetime({column_ref}, errors='coerce')\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to DATE: {{e}}')\n    return pd.Series(dtype='datetime64[ns]')"
+                
+            elif target_type == "TEXT":
+                if source_type in ["INTEGER", "REAL", "DECIMAL"]:
+                    return f"try:\n    {column_ref}.astype(str).replace('nan', '')\nexcept Exception:\n    return pd.Series('', index={column_ref}.index)"
+                else:
+                    return f"try:\n    {column_ref}.astype(str).replace('nan', '')\nexcept Exception:\n    return pd.Series('', index={column_ref}.index)"
+        else:
+            # Medium/low confidence use simpler transformations
+            # Generate transformation based on target data type
+            if target_type == "INTEGER":
+                return f"pd.to_numeric({column_ref}, errors='coerce').astype('Int64')"
+                
+            elif target_type == "REAL":
+                return f"pd.to_numeric({column_ref}, errors='coerce')"
+                
+            elif target_type == "DATE":
+                return f"pd.to_datetime({column_ref}, errors='coerce')"
+                
+            elif target_type == "TEXT":
+                if source_type in ["INTEGER", "REAL", "DECIMAL"]:
+                    return f"{column_ref}.astype(str)"
+                else:
+                    return column_ref
+        
+        # Default: direct mapping
+        return column_ref
+
     def _generate_transformation_logic(self, source_attr: Dict[str, Any], 
                                      target_attr: Dict[str, Any]) -> str:
         """
@@ -634,6 +1190,11 @@ class MappingAgent(BaseAgent):
                 
         # Default: direct mapping
         return column_ref
+
+    def _get_timestamp(self):
+        """Get current timestamp as ISO format string"""
+        from datetime import datetime
+        return datetime.now().isoformat()
 
 
 class DataEngineerAgent(BaseAgent):
