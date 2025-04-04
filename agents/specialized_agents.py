@@ -1,1204 +1,1412 @@
 """
-Specialized Agents for Customer 360 Agentic Solution
+Specialized Agents Module for Customer 360
 
-This module defines various specialized agents for handling different aspects
-of the Customer 360 data product.
+This module defines the specialized agents that perform specific roles
+within the Customer 360 solution, each inheriting from the BaseAgent.
 """
 
-from typing import Dict, List, Any, Optional
-import json
-import sqlite3
-from pathlib import Path
 import os
 import sys
 import logging
-import re
-from datetime import datetime
+import json
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple, Union
+import pandas as pd
 
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 from agents.base_agent import BaseAgent
-from database.setup_db import get_db_connection
+from database.setup_db import get_db_connection, add_source_system, add_customer_attribute, add_data_mapping, add_certification, update_certification
+from tools.data_source_scanner import scan_source, get_sample_data, extract_attributes
+from tools.mapping_validator import validate_mapping, validate_all_mappings
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 class DataStewardAgent(BaseAgent):
     """
-    Data Steward Agent responsible for identifying, validating, and 
-    maintaining data source information.
+    Data Steward Agent
+    
+    Responsibilities:
+    - Identify and catalog source data systems
+    - Scan source systems to extract schema information
+    - Validate source data quality
+    - Track data owners and accountability
     """
     
-    def __init__(self, model_name: str = "llama3"):
-        super().__init__(
-            name="Data Steward Agent",
-            description="identifying, validating, and documenting data sources",
-            model_name=model_name
-        )
-        
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def __init__(self, agent_id: str = "data_steward", 
+                name: str = "Data Steward", 
+                description: str = "Manages data sources and quality",
+                config: Optional[Dict[str, Any]] = None):
+        """Initialize the Data Steward agent."""
+        super().__init__(agent_id, name, description, config)
+    
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """Get capabilities supported by this agent."""
+        return [
+            {
+                "name": "register_source_system",
+                "description": "Register a new source system",
+                "parameters": {
+                    "name": "Name of the source system",
+                    "description": "Description of the source system",
+                    "owner": "Owner of the source system"
+                }
+            },
+            {
+                "name": "scan_source_system",
+                "description": "Scan a source system to extract schema",
+                "parameters": {
+                    "source_id": "ID of the source system"
+                }
+            },
+            {
+                "name": "get_source_systems",
+                "description": "Get list of registered source systems",
+                "parameters": {}
+            },
+            {
+                "name": "get_sample_data",
+                "description": "Get sample data from a source system",
+                "parameters": {
+                    "source_id": "ID of the source system",
+                    "attribute_name": "Optional name of attribute to get samples for"
+                }
+            }
+        ]
+    
+    def action_register_source_system(self, name: str, description: str, owner: str) -> Dict[str, Any]:
         """
-        Run the data steward agent's functionality.
+        Register a new source system.
         
-        Expected inputs:
-        - action: 'identify_sources', 'validate_source', or 'document_source'
-        - source_details: Dict with source system details (for validate and document)
-        - source_id: ID of the source system (for validate)
+        Args:
+            name: Name of the source system
+            description: Description of the source system
+            owner: Owner of the source system
+            
+        Returns:
+            Result of the registration
+        """
+        return add_source_system(name, description, owner)
+        
+    def action_scan_source_system(self, source_id: int) -> Dict[str, Any]:
+        """
+        Scan a source system to extract its schema.
+        
+        Args:
+            source_id: ID of the source system
+            
+        Returns:
+            Schema information
+        """
+        return scan_source(source_id)
+    
+    def action_get_source_systems(self) -> Dict[str, Any]:
+        """
+        Get a list of all registered source systems.
         
         Returns:
-            Dict containing the agent's outputs
+            List of source systems
         """
-        action = inputs.get('action')
-        
-        if action == 'identify_sources':
-            return self._identify_sources()
-        elif action == 'validate_source':
-            return self._validate_source(inputs.get('source_details', {}), 
-                                        inputs.get('source_id'))
-        elif action == 'document_source':
-            return self._document_source(inputs.get('source_details', {}))
-        else:
-            error_msg = f"Unknown action: {action}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-            
-    def _identify_sources(self) -> Dict[str, Any]:
-        """Identify all available data sources from the database"""
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
             cursor.execute("SELECT * FROM source_systems")
-            sources = [dict(row) for row in cursor.fetchall()]
+            source_systems = [dict(row) for row in cursor.fetchall()]
+            
             conn.close()
             
-            self.log_interaction("identify_sources", "Retrieved all source systems", 
-                                 f"Found {len(sources)} sources")
-            
             return {
-                "success": True, 
-                "sources": sources,
-                "message": f"Found {len(sources)} data sources"
+                "success": True,
+                "source_systems": source_systems,
+                "count": len(source_systems)
             }
         except Exception as e:
-            error_msg = f"Error identifying sources: {e}"
-            self.logger.error(error_msg)
+            error_msg = f"Error getting source systems: {e}"
+            logger.error(error_msg)
             return {"success": False, "error": error_msg}
     
-    def _validate_source(self, source_details: Dict[str, Any], source_id: int) -> Dict[str, Any]:
-        """Validate a data source system"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
+    def action_get_sample_data(self, source_id: int, attribute_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get sample data from a source system.
+        
+        Args:
+            source_id: ID of the source system
+            attribute_name: Optional name of attribute to get samples for
             
-            # Get the source details from the database
-            cursor.execute("SELECT * FROM source_systems WHERE id = ?", (source_id,))
-            source = cursor.fetchone()
-            
-            if not source:
-                return {"success": False, "error": f"Source with ID {source_id} not found"}
-            
-            # Basic validation rules (could be expanded)
-            validation_issues = []
-            if not source_details.get('system_name'):
-                validation_issues.append("Missing system name")
-            if not source_details.get('description'):
-                validation_issues.append("Missing description")
-            if not source_details.get('data_owner'):
-                validation_issues.append("Missing data owner")
-            
-            is_valid = len(validation_issues) == 0
-            
-            # Update the last_updated timestamp
-            cursor.execute(
-                "UPDATE source_systems SET last_updated = CURRENT_TIMESTAMP WHERE id = ?",
-                (source_id,)
-            )
-            conn.commit()
-            conn.close()
-            
-            self.log_interaction(
-                "validate_source", 
-                f"Validated source {source_id}", 
-                f"Valid: {is_valid}, Issues: {', '.join(validation_issues) if validation_issues else 'None'}"
-            )
-            
-            return {
-                "success": True,
-                "is_valid": is_valid,
-                "validation_issues": validation_issues,
-                "message": ("Source is valid" if is_valid 
-                           else f"Source has issues: {', '.join(validation_issues)}")
-            }
-        except Exception as e:
-            error_msg = f"Error validating source: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-            
-    def _document_source(self, source_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Document a new data source or update an existing one"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Check if the source already exists
-            cursor.execute(
-                "SELECT id FROM source_systems WHERE system_name = ?", 
-                (source_details.get('system_name'),)
-            )
-            existing_source = cursor.fetchone()
-            
-            if existing_source:
-                # Update existing source
-                cursor.execute(
-                    """
-                    UPDATE source_systems
-                    SET description = ?, connection_details = ?, data_owner = ?, last_updated = CURRENT_TIMESTAMP
-                    WHERE system_name = ?
-                    """,
-                    (
-                        source_details.get('description', ''),
-                        source_details.get('connection_details', ''),
-                        source_details.get('data_owner', ''),
-                        source_details.get('system_name')
-                    )
-                )
-                source_id = existing_source['id']
-                message = f"Updated existing source: {source_details.get('system_name')}"
-            else:
-                # Insert new source
-                cursor.execute(
-                    """
-                    INSERT INTO source_systems (system_name, description, connection_details, data_owner)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (
-                        source_details.get('system_name', ''),
-                        source_details.get('description', ''),
-                        source_details.get('connection_details', ''),
-                        source_details.get('data_owner', '')
-                    )
-                )
-                source_id = cursor.lastrowid
-                message = f"Added new source: {source_details.get('system_name')}"
-            
-            conn.commit()
-            conn.close()
-            
-            self.log_interaction("document_source", json.dumps(source_details), message)
-            
-            return {
-                "success": True,
-                "source_id": source_id,
-                "message": message
-            }
-        except Exception as e:
-            error_msg = f"Error documenting source: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
+        Returns:
+            Sample data
+        """
+        return get_sample_data(source_id, attribute_name)
 
 
 class DomainExpertAgent(BaseAgent):
     """
-    Domain Expert Agent responsible for providing business context 
-    and requirements for the Customer 360 data product.
+    Domain Expert Agent
+    
+    Responsibilities:
+    - Define target data attributes based on business requirements
+    - Define data quality rules
+    - Provide domain expertise for data transformations
+    - Certify data products from a business perspective
     """
     
-    def __init__(self, model_name: str = "llama3"):
-        super().__init__(
-            name="Domain Expert Agent",
-            description="providing business context and requirements for banking data",
-            model_name=model_name
-        )
-        
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Run the domain expert agent's functionality.
-        
-        Expected inputs:
-        - action: 'define_requirements', 'validate_attribute', or 'suggest_improvements'
-        - attribute_details: Dict with attribute details (for validate_attribute)
-        - attribute_id: ID of the attribute (for validate_attribute)
-        - data_product_details: Dict with current data product details (for suggest_improvements)
-        
-        Returns:
-            Dict containing the agent's outputs
-        """
-        action = inputs.get('action')
-        
-        if action == 'define_requirements':
-            return self._define_requirements()
-        elif action == 'validate_attribute':
-            return self._validate_attribute(
-                inputs.get('attribute_details', {}), 
-                inputs.get('attribute_id')
-            )
-        elif action == 'suggest_improvements':
-            return self._suggest_improvements(inputs.get('data_product_details', {}))
-        else:
-            error_msg = f"Unknown action: {action}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
+    def __init__(self, agent_id: str = "domain_expert", 
+                name: str = "Domain Expert", 
+                description: str = "Provides business context and requirements",
+                config: Optional[Dict[str, Any]] = None):
+        """Initialize the Domain Expert agent."""
+        super().__init__(agent_id, name, description, config)
     
-    def _define_requirements(self) -> Dict[str, Any]:
-        """Define business requirements for the Customer 360 data product"""
-        # In a real system, this would involve LLM interactions with stored banking domain knowledge
-        # For this example, we'll return predefined banking domain requirements
-        
-        banking_requirements = [
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """Get capabilities supported by this agent."""
+        return [
             {
-                "category": "Customer Identity",
-                "attributes": ["customer_id", "first_name", "last_name", "date_of_birth"],
-                "importance": "Critical",
-                "description": "Core identity attributes needed for customer identification"
+                "name": "define_customer_attribute",
+                "description": "Define a new target customer attribute",
+                "parameters": {
+                    "name": "Name of the attribute",
+                    "data_type": "Data type of the attribute",
+                    "description": "Description of the attribute",
+                    "is_pii": "Whether this attribute contains PII",
+                    "category": "Category of the attribute"
+                }
             },
             {
-                "category": "Contact Information",
-                "attributes": ["email", "phone", "address", "city", "state", "zip_code"],
-                "importance": "High",
-                "description": "Contact details for customer communications"
+                "name": "get_customer_attributes",
+                "description": "Get list of defined customer attributes",
+                "parameters": {
+                    "category": "Optional category to filter by"
+                }
             },
             {
-                "category": "Financial Profile",
-                "attributes": ["credit_score", "income_bracket", "risk_profile", "lifetime_value"],
-                "importance": "High", 
-                "description": "Financial indicators for product recommendations and risk assessment"
+                "name": "create_certification",
+                "description": "Create a new certification record",
+                "parameters": {
+                    "cert_type": "Type of certification",
+                    "notes": "Additional notes"
+                }
             },
             {
-                "category": "Behavioral Data",
-                "attributes": ["preferred_channel", "last_interaction_date", "segment"],
-                "importance": "Medium",
-                "description": "Customer behavior data for personalization"
+                "name": "certify_mapping",
+                "description": "Certify a data mapping from business perspective",
+                "parameters": {
+                    "cert_id": "ID of the certification",
+                    "status": "Certification status (certified, rejected)",
+                    "notes": "Additional notes",
+                    "certified_by": "Who is certifying"
+                }
             }
         ]
-        
-        self.log_interaction(
-            "define_requirements", 
-            "Defined business requirements for Customer 360", 
-            f"Defined {len(banking_requirements)} requirement categories"
-        )
-        
-        return {
-            "success": True,
-            "requirements": banking_requirements,
-            "message": "Retrieved banking domain requirements for Customer 360"
-        }
     
-    def _validate_attribute(self, attribute_details: Dict[str, Any], attribute_id: int) -> Dict[str, Any]:
-        """Validate a customer attribute from a business perspective"""
+    def action_define_customer_attribute(self, name: str, data_type: str, 
+                                       description: str, is_pii: bool = False,
+                                       category: str = "other") -> Dict[str, Any]:
+        """
+        Define a new target customer attribute.
+        
+        Args:
+            name: Name of the attribute
+            data_type: Data type of the attribute
+            description: Description of the attribute
+            is_pii: Whether this attribute contains PII
+            category: Category of the attribute
+            
+        Returns:
+            Result of the attribute creation
+        """
+        return add_customer_attribute(name, data_type, description, is_pii, category)
+    
+    def action_get_customer_attributes(self, category: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get a list of defined customer attributes.
+        
+        Args:
+            category: Optional category to filter by
+            
+        Returns:
+            List of customer attributes
+        """
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Get the attribute details from the database
-            cursor.execute("SELECT * FROM customer_attributes WHERE id = ?", (attribute_id,))
-            attribute = cursor.fetchone()
-            conn.close()
-            
-            if not attribute:
-                return {"success": False, "error": f"Attribute with ID {attribute_id} not found"}
-            
-            # Domain-specific validation (could be expanded with LLM)
-            attribute_name = attribute['attribute_name']
-            data_type = attribute['data_type']
-            
-            validation_issues = []
-            
-            # Apply domain-specific validation rules
-            if attribute_name == 'email' and data_type != 'TEXT':
-                validation_issues.append("Email should be TEXT type")
-            
-            if attribute_name == 'credit_score' and data_type != 'INTEGER':
-                validation_issues.append("Credit score should be INTEGER type")
-                
-            if attribute_name == 'date_of_birth' and data_type != 'DATE':
-                validation_issues.append("Date of birth should be DATE type")
-                
-            # Check if sensitive data is properly marked
-            sensitive_attributes = ['customer_id', 'first_name', 'last_name', 'date_of_birth', 
-                                   'email', 'phone', 'address']
-            
-            if attribute_name in sensitive_attributes and not attribute['is_pii']:
-                validation_issues.append(f"{attribute_name} should be marked as PII")
-                
-            is_valid = len(validation_issues) == 0
-            
-            self.log_interaction(
-                "validate_attribute", 
-                f"Validated attribute {attribute_id} ({attribute_name})", 
-                f"Valid: {is_valid}, Issues: {', '.join(validation_issues) if validation_issues else 'None'}"
-            )
-            
-            return {
-                "success": True,
-                "is_valid": is_valid,
-                "validation_issues": validation_issues,
-                "message": f"Attribute {attribute_name} is {'valid' if is_valid else 'invalid'}"
-            }
-        except Exception as e:
-            error_msg = f"Error validating attribute: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-            
-    def _suggest_improvements(self, data_product_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Suggest improvements to the Customer 360 data product"""
-        # In a real implementation, this would use LLM to analyze the current state
-        # and suggest improvements based on banking industry knowledge
-        
-        # For this example, we'll return some predefined suggestions
-        suggestions = [
-            {
-                "category": "Financial Health",
-                "attributes": ["spending_pattern", "saving_ratio", "investment_profile"],
-                "description": "Add attributes to track customer financial health indicators"
-            },
-            {
-                "category": "Product Recommendations",
-                "attributes": ["next_best_offer", "propensity_scores"],
-                "description": "Include propensity scores for various banking products"
-            },
-            {
-                "category": "Relationship Data",
-                "attributes": ["household_id", "related_accounts"],
-                "description": "Add household relationships to enable family-based offerings"
-            }
-        ]
-        
-        self.log_interaction(
-            "suggest_improvements",
-            "Generated improvement suggestions for Customer 360",
-            f"Suggested {len(suggestions)} improvement categories"
-        )
-        
-        return {
-            "success": True,
-            "suggestions": suggestions,
-            "message": "Generated improvement suggestions for the data product"
-        }
-
-
-class DataEngineerAgent(BaseAgent):
-    """
-    Data Engineer Agent responsible for implementing data extraction, 
-    transformation, and loading (ETL) processes.
-    """
-    
-    def __init__(self, model_name: str = "llama3"):
-        super().__init__(
-            name="Data Engineer Agent",
-            description="implementing data extraction, transformation, and loading processes",
-            model_name=model_name
-        )
-        
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Run the data engineer agent's functionality.
-        
-        Expected inputs:
-        - action: 'generate_etl_code', 'validate_transformation', or 'execute_etl'
-        - source_id: ID of the source system
-        - mapping_details: Dict with mapping details
-        - transformation_code: Code for the transformation (for validate_transformation)
-        
-        Returns:
-            Dict containing the agent's outputs
-        """
-        action = inputs.get('action')
-        
-        if action == 'generate_etl_code':
-            return self._generate_etl_code(inputs.get('source_id'), inputs.get('mapping_details', {}))
-        elif action == 'validate_transformation':
-            return self._validate_transformation(inputs.get('transformation_code', ''))
-        elif action == 'execute_etl':
-            return self._execute_etl(inputs.get('source_id'), inputs.get('mapping_details', {}))
-        else:
-            error_msg = f"Unknown action: {action}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def _generate_etl_code(self, source_id: int, mapping_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate ETL code for a data source based on mappings"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get source system details
-            cursor.execute("SELECT * FROM source_systems WHERE id = ?", (source_id,))
-            source = cursor.fetchone()
-            
-            if not source:
-                return {"success": False, "error": f"Source with ID {source_id} not found"}
-            
-            # Get mappings for this source
-            cursor.execute("""
-                SELECT m.*, ca.attribute_name, ca.data_type 
-                FROM data_mappings m
-                JOIN customer_attributes ca ON m.target_attribute_id = ca.id
-                WHERE m.source_system_id = ?
-            """, (source_id,))
-            
-            mappings = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            
-            if not mappings:
-                return {"success": False, "error": f"No mappings found for source ID {source_id}"}
-            
-            # Generate Python code for the ETL process
-            # In a real implementation, this would be more sophisticated and use LLM for code generation
-            source_name = source['system_name']
-            
-            etl_code = f"""
-import pandas as pd
-import sqlite3
-from datetime import datetime
-
-def extract_from_{source_name.lower()}():
-    \"\"\"
-    Extract data from the {source_name} system.
-    
-    Returns:
-        DataFrame containing the extracted data
-    \"\"\"
-    # TODO: Implement actual extraction from source system
-    # This is a placeholder for demonstration
-    
-    # Mock data for demonstration
-    data = {{
-"""
-            
-            # Add sample data columns based on mappings
-            for mapping in mappings:
-                source_attr = mapping['source_attribute']
-                etl_code += f"        '{source_attr}': ['sample_value_1', 'sample_value_2', 'sample_value_3'],\n"
-                
-            etl_code += """    }
-    
-    return pd.DataFrame(data)
-
-def transform_data(df):
-    \"\"\"
-    Transform data according to the defined mappings.
-    
-    Args:
-        df: DataFrame with source data
-        
-    Returns:
-        Transformed DataFrame ready for loading
-    \"\"\"
-    result_df = pd.DataFrame()
-    
-"""
-            
-            # Add transformation logic based on mappings
-            for mapping in mappings:
-                source_attr = mapping['source_attribute']
-                target_attr = mapping['attribute_name']
-                transformation = mapping['transformation_logic'] or f"df['{source_attr}']"
-                
-                etl_code += f"""    # Transform {source_attr} to {target_attr}
-    try:
-        result_df['{target_attr}'] = {transformation}
-    except Exception as e:
-        print(f"Error transforming {source_attr} to {target_attr}: {{e}}")
-        result_df['{target_attr}'] = None
-        
-"""
-            
-            etl_code += """
-    return result_df
-
-def load_data(df):
-    \"\"\"
-    Load transformed data into the Customer 360 database.
-    
-    Args:
-        df: Transformed DataFrame ready for loading
-        
-    Returns:
-        Number of records loaded
-    \"\"\"
-    conn = sqlite3.connect('data/customer360.db')
-    
-    # Update or insert records
-    records_loaded = 0
-    for _, row in df.iterrows():
-        try:
-            # Check if customer exists
-            cust_id = row.get('customer_id')
-            if pd.isna(cust_id):
-                continue
-                
-            cursor = conn.cursor()
-            cursor.execute("SELECT customer_id FROM customer_360 WHERE customer_id = ?", (cust_id,))
-            exists = cursor.fetchone()
-            
-            if exists:
-                # Update existing customer - dynamically build SQL
-                update_cols = [f"{col} = ?" for col in df.columns if col != 'customer_id']
-                update_vals = [row[col] for col in df.columns if col != 'customer_id']
-                update_vals.append(cust_id)  # For WHERE clause
-                
-                update_sql = f"UPDATE customer_360 SET {', '.join(update_cols)} WHERE customer_id = ?"
-                cursor.execute(update_sql, update_vals)
+            if category:
+                cursor.execute("SELECT * FROM customer_attributes WHERE category = ?", (category,))
             else:
-                # Insert new customer
-                cols = ", ".join(df.columns)
-                placeholders = ", ".join(["?" for _ in df.columns])
-                values = [row[col] for col in df.columns]
+                cursor.execute("SELECT * FROM customer_attributes")
                 
-                insert_sql = f"INSERT INTO customer_360 ({cols}) VALUES ({placeholders})"
-                cursor.execute(insert_sql, values)
-                
-            records_loaded += 1
+            attributes = [dict(row) for row in cursor.fetchall()]
             
-        except Exception as e:
-            print(f"Error loading record: {e}")
-            continue
-    
-    conn.commit()
-    conn.close()
-    
-    return records_loaded
-
-def run_etl_process():
-    \"\"\"
-    Run the full ETL process.
-    
-    Returns:
-        Summary of ETL results
-    \"\"\"
-    print(f"Starting ETL from {source_name} at {datetime.now()}")
-    
-    # Extract
-    source_df = extract_from_{source_name.lower()}()
-    print(f"Extracted {len(source_df)} records")
-    
-    # Transform
-    transformed_df = transform_data(source_df)
-    print(f"Transformed data to {len(transformed_df.columns)} target columns")
-    
-    # Load
-    records_loaded = load_data(transformed_df)
-    print(f"Loaded {records_loaded} records into Customer 360")
-    
-    return {
-        "records_extracted": len(source_df),
-        "records_loaded": records_loaded,
-        "execution_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-if __name__ == "__main__":
-    results = run_etl_process()
-    print(f"ETL Results: {results}")
-"""
-            
-            self.log_interaction(
-                "generate_etl_code",
-                f"Generated ETL code for source {source_id} ({source_name})",
-                f"Created ETL code with {len(mappings)} mappings"
-            )
-            
-            return {
-                "success": True,
-                "source_name": source_name,
-                "etl_code": etl_code,
-                "message": f"Generated ETL code for {source_name} with {len(mappings)} mappings"
-            }
-            
-        except Exception as e:
-            error_msg = f"Error generating ETL code: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def _validate_transformation(self, transformation_code: str) -> Dict[str, Any]:
-        """Validate a transformation code snippet"""
-        # In a real implementation, this would use LLM to analyze and validate the code
-        # For this example, we'll do some basic checks
-        
-        validation_issues = []
-        
-        # Check for common issues
-        if "df[" not in transformation_code and "lambda" not in transformation_code:
-            validation_issues.append("No DataFrame operations found")
-            
-        if transformation_code.count("(") != transformation_code.count(")"):
-            validation_issues.append("Unbalanced parentheses")
-            
-        dangerous_funcs = ["eval(", "exec(", "os.system(", "subprocess"]
-        for func in dangerous_funcs:
-            if func in transformation_code:
-                validation_issues.append(f"Potentially unsafe function: {func}")
-                
-        is_valid = len(validation_issues) == 0
-        
-        self.log_interaction(
-            "validate_transformation",
-            "Validated transformation code",
-            f"Valid: {is_valid}, Issues: {', '.join(validation_issues) if validation_issues else 'None'}"
-        )
-        
-        return {
-            "success": True,
-            "is_valid": is_valid,
-            "validation_issues": validation_issues,
-            "message": "Transformation code is valid" if is_valid else "Transformation code has issues"
-        }
-    
-    def _execute_etl(self, source_id: int, mapping_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute ETL process for a data source"""
-        # In a real implementation, this would actually execute the ETL code
-        # For this example, we'll simulate the execution
-        
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get source system details
-            cursor.execute("SELECT * FROM source_systems WHERE id = ?", (source_id,))
-            source = cursor.fetchone()
-            
-            if not source:
-                return {"success": False, "error": f"Source with ID {source_id} not found"}
-                
-            # Get count of mappings
-            cursor.execute("""
-                SELECT COUNT(*) FROM data_mappings
-                WHERE source_system_id = ?
-            """, (source_id,))
-            
-            mapping_count = cursor.fetchone()[0]
-            
-            # Simulate ETL execution results
-            import random
-            records_extracted = random.randint(100, 1000)
-            records_loaded = int(records_extracted * random.uniform(0.9, 1.0))  # 90-100% success rate
-            execution_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            # Log the ETL execution in the database
-            cursor.execute(
-                """
-                INSERT INTO agent_interactions (agent_name, action_type, details, result)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    self.name, 
-                    f"execute_etl_{source['system_name']}", 
-                    f"Executed ETL for source {source_id} ({source['system_name']})",
-                    json.dumps({
-                        "records_extracted": records_extracted,
-                        "records_loaded": records_loaded,
-                        "execution_time": execution_time
-                    })
-                )
-            )
-            conn.commit()
             conn.close()
             
             return {
                 "success": True,
-                "source_name": source['system_name'],
-                "records_extracted": records_extracted,
-                "records_loaded": records_loaded,
-                "execution_time": execution_time,
-                "message": f"ETL executed for {source['system_name']}: {records_loaded}/{records_extracted} records loaded"
+                "attributes": attributes,
+                "count": len(attributes)
             }
-            
         except Exception as e:
-            error_msg = f"Error executing ETL: {e}"
-            self.logger.error(error_msg)
+            error_msg = f"Error getting customer attributes: {e}"
+            logger.error(error_msg)
             return {"success": False, "error": error_msg}
+    
+    def action_create_certification(self, cert_type: str, notes: str = "") -> Dict[str, Any]:
+        """
+        Create a new certification record.
+        
+        Args:
+            cert_type: Type of certification
+            notes: Additional notes
+            
+        Returns:
+            Result of the certification creation
+        """
+        return add_certification(cert_type, notes)
+    
+    def action_certify_mapping(self, cert_id: int, status: str, 
+                             notes: str = "", certified_by: str = "") -> Dict[str, Any]:
+        """
+        Certify a data mapping from business perspective.
+        
+        Args:
+            cert_id: ID of the certification
+            status: Certification status (certified, rejected)
+            notes: Additional notes
+            certified_by: Who is certifying
+            
+        Returns:
+            Result of the certification update
+        """
+        return update_certification(cert_id, status, notes, certified_by)
 
 
 class MappingAgent(BaseAgent):
     """
-    Mapping Agent responsible for automating the creation of 
-    source-to-target attribute mapping.
+    Mapping Agent
+    
+    Responsibilities:
+    - Create source-to-target attribute mappings
+    - Generate transformation logic for mappings
+    - Validate mappings for data quality
+    - Track mapping lineage
     """
     
-    def __init__(self, model_name: str = "llama3"):
-        super().__init__(
-            name="Mapping Agent",
-            description="automating source-to-target data attribute mapping",
-            model_name=model_name
-        )
-        
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Run the mapping agent's functionality.
-        
-        Expected inputs:
-        - action: 'suggest_mappings', 'validate_mapping', or 'store_mapping'
-        - source_id: ID of the source system
-        - source_attributes: List of source attributes for mapping suggestions
-        - mapping_details: Dict with mapping details (for validate_mapping and store_mapping)
-        
-        Returns:
-            Dict containing the agent's outputs
-        """
-        action = inputs.get('action')
-        
-        if action == 'suggest_mappings':
-            return self._suggest_mappings(
-                inputs.get('source_id'), 
-                inputs.get('source_attributes', [])
-            )
-        elif action == 'validate_mapping':
-            return self._validate_mapping(inputs.get('mapping_details', {}))
-        elif action == 'store_mapping':
-            return self._store_mapping(inputs.get('mapping_details', {}))
-        else:
-            error_msg = f"Unknown action: {action}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
+    def __init__(self, agent_id: str = "mapping_agent", 
+                name: str = "Mapping Agent", 
+                description: str = "Creates and validates data mappings",
+                config: Optional[Dict[str, Any]] = None):
+        """Initialize the Mapping Agent."""
+        super().__init__(agent_id, name, description, config)
     
-    def _suggest_mappings(self, source_id: int, source_attributes: List[str]) -> Dict[str, Any]:
-        """Suggest mappings from source attributes to target attributes"""
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """Get capabilities supported by this agent."""
+        return [
+            {
+                "name": "create_mapping",
+                "description": "Create a source-to-target attribute mapping",
+                "parameters": {
+                    "source_system_id": "ID of the source system",
+                    "source_attribute": "Name of the source attribute",
+                    "target_attribute_id": "ID of the target attribute",
+                    "transformation_logic": "Logic for transforming the data",
+                    "created_by": "Who created this mapping"
+                }
+            },
+            {
+                "name": "validate_mapping",
+                "description": "Validate a specific mapping",
+                "parameters": {
+                    "mapping_id": "ID of the mapping to validate"
+                }
+            },
+            {
+                "name": "validate_all_mappings",
+                "description": "Validate all mappings for a source system",
+                "parameters": {
+                    "source_id": "Optional ID of the source system"
+                }
+            },
+            {
+                "name": "get_mappings",
+                "description": "Get existing mappings",
+                "parameters": {
+                    "source_id": "Optional ID of the source system",
+                    "target_id": "Optional ID of the target attribute",
+                    "status": "Optional mapping status to filter by"
+                }
+            },
+            {
+                "name": "suggest_mappings",
+                "description": "Suggest potential mappings based on schema and attribute names",
+                "parameters": {
+                    "source_id": "ID of the source system"
+                }
+            }
+        ]
+    
+    def action_create_mapping(self, source_system_id: int, source_attribute: str,
+                            target_attribute_id: int, transformation_logic: str = "",
+                            created_by: str = "MappingAgent") -> Dict[str, Any]:
+        """
+        Create a source-to-target attribute mapping.
+        
+        Args:
+            source_system_id: ID of the source system
+            source_attribute: Name of the source attribute
+            target_attribute_id: ID of the target attribute
+            transformation_logic: Logic for transforming the data
+            created_by: Who created this mapping
+            
+        Returns:
+            Result of the mapping creation
+        """
+        return add_data_mapping(source_system_id, source_attribute, 
+                              target_attribute_id, transformation_logic, created_by)
+    
+    def action_validate_mapping(self, mapping_id: int) -> Dict[str, Any]:
+        """
+        Validate a specific mapping.
+        
+        Args:
+            mapping_id: ID of the mapping to validate
+            
+        Returns:
+            Validation result
+        """
+        return validate_mapping(mapping_id)
+    
+    def action_validate_all_mappings(self, source_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Validate all mappings for a source system.
+        
+        Args:
+            source_id: Optional ID of the source system
+            
+        Returns:
+            Validation results
+        """
+        return validate_all_mappings(source_id)
+    
+    def action_get_mappings(self, source_id: Optional[int] = None, 
+                          target_id: Optional[int] = None,
+                          status: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get existing mappings.
+        
+        Args:
+            source_id: Optional ID of the source system
+            target_id: Optional ID of the target attribute
+            status: Optional mapping status to filter by
+            
+        Returns:
+            List of mappings
+        """
         try:
-            if not source_attributes:
-                return {"success": False, "error": "No source attributes provided"}
-                
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Get source system details
-            cursor.execute("SELECT * FROM source_systems WHERE id = ?", (source_id,))
-            source = cursor.fetchone()
+            # Build query based on filters
+            query = """
+                SELECT 
+                    m.*, 
+                    s.system_name as source_system_name,
+                    ca.attribute_name as target_attribute_name
+                FROM data_mappings m
+                JOIN source_systems s ON m.source_system_id = s.id
+                JOIN customer_attributes ca ON m.target_attribute_id = ca.id
+                WHERE 1=1
+            """
+            params = []
             
-            if not source:
-                return {"success": False, "error": f"Source with ID {source_id} not found"}
+            if source_id is not None:
+                query += " AND m.source_system_id = ?"
+                params.append(source_id)
                 
-            # Get all target attributes
+            if target_id is not None:
+                query += " AND m.target_attribute_id = ?"
+                params.append(target_id)
+                
+            if status is not None:
+                query += " AND m.mapping_status = ?"
+                params.append(status)
+                
+            cursor.execute(query, params)
+            mappings = [dict(row) for row in cursor.fetchall()]
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "mappings": mappings,
+                "count": len(mappings)
+            }
+        except Exception as e:
+            error_msg = f"Error getting mappings: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_suggest_mappings(self, source_id: int) -> Dict[str, Any]:
+        """
+        Suggest potential mappings based on schema and attribute names.
+        
+        This uses a simple heuristic to suggest mappings based on attribute
+        name similarity. In a real system, this would use more sophisticated
+        techniques like embeddings, ML models, etc.
+        
+        Args:
+            source_id: ID of the source system
+            
+        Returns:
+            List of suggested mappings
+        """
+        try:
+            # Get source system attributes
+            source_result = extract_attributes(source_id)
+            
+            if not source_result.get("success", False):
+                return source_result
+                
+            source_attributes = source_result.get("attributes", [])
+            
+            if not source_attributes:
+                return {
+                    "success": False,
+                    "error": "No attributes found for the source system"
+                }
+                
+            # Get target attributes
+            conn = get_db_connection()
+            cursor = conn.cursor()
             cursor.execute("SELECT * FROM customer_attributes")
             target_attributes = [dict(row) for row in cursor.fetchall()]
             conn.close()
             
-            # In a real system, this would use LLM to make intelligent mapping suggestions
-            # For this example, we'll use simple name matching heuristics
-            
+            # Simple matching heuristic
             suggested_mappings = []
             
             for source_attr in source_attributes:
-                best_match = None
-                best_score = 0
+                source_name = source_attr.get("name", "").lower()
                 
-                # Normalize source attribute name
-                norm_source_attr = source_attr.lower().replace('_', ' ')
+                # Extract just the column name without table prefix
+                if "." in source_name:
+                    source_col = source_name.split(".")[-1]
+                else:
+                    source_col = source_name
+                    
+                best_match = None
+                highest_score = 0
                 
                 for target_attr in target_attributes:
-                    target_name = target_attr['attribute_name']
-                    # Normalize target attribute name
-                    norm_target_name = target_name.lower().replace('_', ' ')
+                    target_name = target_attr.get("attribute_name", "").lower()
                     
-                    # Calculate simple similarity score
-                    # In a real implementation, this would use more sophisticated techniques
-                    # like word embeddings, Levenshtein distance, etc.
+                    # Calculate similarity score (very simple for demonstration)
+                    # In a real system, use more sophisticated NLP techniques
+                    score = self._calculate_similarity(source_col, target_name)
                     
-                    # Check for exact matches first
-                    if norm_source_attr == norm_target_name:
-                        score = 1.0
-                    # Check for partial matches
-                    elif norm_source_attr in norm_target_name or norm_target_name in norm_source_attr:
-                        score = 0.8
-                    # Check for word-level matches
-                    else:
-                        source_words = set(norm_source_attr.split())
-                        target_words = set(norm_target_name.split())
-                        common_words = source_words.intersection(target_words)
-                        
-                        if common_words:
-                            score = len(common_words) / max(len(source_words), len(target_words))
-                        else:
-                            score = 0
-                    
-                    if score > best_score:
-                        best_score = score
+                    if score > highest_score and score > 0.5:  # Threshold
+                        highest_score = score
                         best_match = target_attr
                 
-                # Only suggest mappings with a reasonable confidence score
-                if best_score >= 0.3:
+                if best_match:
+                    # Generate simple transformation logic based on data types
+                    transformation_logic = self._generate_transformation_logic(
+                        source_attr, best_match
+                    )
+                    
                     suggested_mappings.append({
-                        "source_attribute": source_attr,
-                        "target_attribute_id": best_match['id'],
-                        "target_attribute_name": best_match['attribute_name'],
-                        "confidence": best_score,
-                        "transformation_logic": (f"df['{source_attr}']" if best_score > 0.7 
-                                                else f"# Transform {source_attr} to {best_match['attribute_name']}\n# df['{source_attr}']")
+                        "source_system_id": source_id,
+                        "source_attribute": source_attr.get("name"),
+                        "target_attribute_id": best_match.get("id"),
+                        "target_attribute_name": best_match.get("attribute_name"),
+                        "confidence_score": highest_score,
+                        "transformation_logic": transformation_logic
                     })
             
-            self.log_interaction(
-                "suggest_mappings",
-                f"Generated mapping suggestions for source {source_id} ({source['system_name']})",
-                f"Suggested {len(suggested_mappings)} mappings out of {len(source_attributes)} source attributes"
+            # Sort by confidence score
+            suggested_mappings = sorted(
+                suggested_mappings,
+                key=lambda x: x.get("confidence_score", 0),
+                reverse=True
             )
             
             return {
                 "success": True,
-                "source_name": source['system_name'],
+                "source_system_id": source_id,
+                "source_system_name": source_result.get("source_name"),
                 "suggested_mappings": suggested_mappings,
-                "message": f"Suggested {len(suggested_mappings)} mappings out of {len(source_attributes)} source attributes"
+                "count": len(suggested_mappings)
             }
+            
         except Exception as e:
             error_msg = f"Error suggesting mappings: {e}"
-            self.logger.error(error_msg)
+            logger.error(error_msg)
             return {"success": False, "error": error_msg}
     
-    def _validate_mapping(self, mapping_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate a proposed mapping"""
-        # Check for required fields
-        required_fields = ['source_system_id', 'source_attribute', 'target_attribute_id', 'transformation_logic']
-        missing_fields = [field for field in required_fields if field not in mapping_details]
-        
-        if missing_fields:
-            return {
-                "success": False, 
-                "error": f"Missing required mapping fields: {', '.join(missing_fields)}"
-            }
-            
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Check if source system exists
-            cursor.execute(
-                "SELECT id FROM source_systems WHERE id = ?", 
-                (mapping_details['source_system_id'],)
-            )
-            if not cursor.fetchone():
-                return {
-                    "success": False, 
-                    "error": f"Source system with ID {mapping_details['source_system_id']} not found"
-                }
-                
-            # Check if target attribute exists
-            cursor.execute(
-                "SELECT id, data_type FROM customer_attributes WHERE id = ?", 
-                (mapping_details['target_attribute_id'],)
-            )
-            target_attr = cursor.fetchone()
-            if not target_attr:
-                return {
-                    "success": False, 
-                    "error": f"Target attribute with ID {mapping_details['target_attribute_id']} not found"
-                }
-                
-            # Validate transformation logic
-            transformation = mapping_details['transformation_logic']
-            validation_issues = []
-            
-            # Basic syntax checks
-            if "df[" in transformation and "]" not in transformation:
-                validation_issues.append("Missing closing bracket in DataFrame access")
-            
-            # Check for potentially harmful operations in the transformation
-            dangerous_patterns = ["exec(", "eval(", "os.", "subprocess", "system("]
-            for pattern in dangerous_patterns:
-                if pattern in transformation:
-                    validation_issues.append(f"Potentially harmful operation: {pattern}")
-            
-            # Check for reasonable transformation length
-            if len(transformation.strip()) < 5:
-                validation_issues.append("Transformation logic is too short")
-                
-            # Validate data type compatibility (simplified)
-            if "int" in transformation.lower() and target_attr['data_type'] not in ['INTEGER', 'REAL']:
-                validation_issues.append(f"Integer operation for non-numeric target type: {target_attr['data_type']}")
-                
-            # Check for duplicate mappings
-            cursor.execute(
-                """
-                SELECT id FROM data_mappings 
-                WHERE source_system_id = ? AND target_attribute_id = ? AND id != ?
-                """,
-                (
-                    mapping_details['source_system_id'],
-                    mapping_details['target_attribute_id'],
-                    mapping_details.get('id', -1)
-                )
-            )
-            if cursor.fetchone():
-                validation_issues.append("Duplicate mapping exists for this target attribute")
-            
-            conn.close()
-            
-            is_valid = len(validation_issues) == 0
-            
-            self.log_interaction(
-                "validate_mapping",
-                f"Validated mapping from {mapping_details['source_attribute']} to attribute ID {mapping_details['target_attribute_id']}",
-                f"Valid: {is_valid}, Issues: {', '.join(validation_issues) if validation_issues else 'None'}"
-            )
-            
-            return {
-                "success": True,
-                "is_valid": is_valid,
-                "validation_issues": validation_issues,
-                "message": "Mapping is valid" if is_valid else f"Mapping has issues: {', '.join(validation_issues)}"
-            }
-        except Exception as e:
-            error_msg = f"Error validating mapping: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def _store_mapping(self, mapping_details: Dict[str, Any]) -> Dict[str, Any]:
-        """Store a mapping in the database"""
-        # Validate the mapping first
-        validation_result = self._validate_mapping(mapping_details)
-        if not validation_result.get('success', False) or not validation_result.get('is_valid', False):
-            return validation_result
-            
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Check if mapping already exists
-            if 'id' in mapping_details and mapping_details['id']:
-                # Update existing mapping
-                cursor.execute(
-                    """
-                    UPDATE data_mappings
-                    SET source_attribute = ?, target_attribute_id = ?,
-                        transformation_logic = ?, mapping_status = ?,
-                        created_by = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        mapping_details['source_attribute'],
-                        mapping_details['target_attribute_id'],
-                        mapping_details['transformation_logic'],
-                        mapping_details.get('mapping_status', 'proposed'),
-                        mapping_details.get('created_by', self.name),
-                        mapping_details['id']
-                    )
-                )
-                mapping_id = mapping_details['id']
-                message = f"Updated mapping with ID {mapping_id}"
-            else:
-                # Insert new mapping
-                cursor.execute(
-                    """
-                    INSERT INTO data_mappings
-                    (source_system_id, source_attribute, target_attribute_id,
-                     transformation_logic, mapping_status, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        mapping_details['source_system_id'],
-                        mapping_details['source_attribute'],
-                        mapping_details['target_attribute_id'],
-                        mapping_details['transformation_logic'],
-                        mapping_details.get('mapping_status', 'proposed'),
-                        mapping_details.get('created_by', self.name)
-                    )
-                )
-                mapping_id = cursor.lastrowid
-                message = f"Created new mapping with ID {mapping_id}"
-            
-            conn.commit()
-            
-            # Get target attribute name for the response
-            cursor.execute(
-                "SELECT attribute_name FROM customer_attributes WHERE id = ?",
-                (mapping_details['target_attribute_id'],)
-            )
-            target_name = cursor.fetchone()['attribute_name']
-            conn.close()
-            
-            self.log_interaction(
-                "store_mapping",
-                f"Stored mapping from {mapping_details['source_attribute']} to {target_name}",
-                message
-            )
-            
-            return {
-                "success": True,
-                "mapping_id": mapping_id,
-                "message": message
-            }
-        except Exception as e:
-            error_msg = f"Error storing mapping: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-
-
-class CertificationAgent(BaseAgent):
-    """
-    Certification Agent responsible for facilitating and
-    documenting the data product certification process.
-    """
-    
-    def __init__(self, model_name: str = "llama3"):
-        super().__init__(
-            name="Certification Agent",
-            description="facilitating and documenting the data product certification process",
-            model_name=model_name
-        )
-        
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_similarity(self, source_name: str, target_name: str) -> float:
         """
-        Run the certification agent's functionality.
+        Calculate similarity between source and target attribute names.
         
-        Expected inputs:
-        - action: 'create_certification', 'check_status', or 'generate_report'
-        - certification_type: Type of certification (data quality, compliance, business value)
-        - certification_id: ID of the certification (for check_status)
-        - cert_data: Dict with certification data (for create_certification)
+        Args:
+            source_name: Source attribute name
+            target_name: Target attribute name
+            
+        Returns:
+            Similarity score between 0 and 1
+        """
+        # Simple string matching for now
+        # In a real system, use embeddings, edit distance, etc.
+        
+        if source_name == target_name:
+            return 1.0
+            
+        # Check if one is contained in the other
+        if source_name in target_name:
+            return 0.8
+            
+        if target_name in source_name:
+            return 0.7
+            
+        # Check for common substrings
+        common_prefix_length = 0
+        for i in range(min(len(source_name), len(target_name))):
+            if source_name[i] == target_name[i]:
+                common_prefix_length += 1
+            else:
+                break
+                
+        if common_prefix_length >= 3:
+            return 0.5 + (common_prefix_length / max(len(source_name), len(target_name)) * 0.3)
+            
+        # Check for individual words
+        source_words = set(source_name.split('_'))
+        target_words = set(target_name.split('_'))
+        
+        common_words = source_words.intersection(target_words)
+        
+        if common_words:
+            return 0.5 + (len(common_words) / max(len(source_words), len(target_words)) * 0.3)
+            
+        return 0.0
+        
+    def _generate_transformation_logic(self, source_attr: Dict[str, Any], 
+                                     target_attr: Dict[str, Any]) -> str:
+        """
+        Generate transformation logic based on source and target attributes.
+        
+        Args:
+            source_attr: Source attribute details
+            target_attr: Target attribute details
+            
+        Returns:
+            Transformation logic as Python code
+        """
+        source_name = source_attr.get("name")
+        source_type = source_attr.get("data_type")
+        target_type = target_attr.get("data_type")
+        
+        # Simple direct reference if column name in table.column format
+        if "." in source_name:
+            table_name, column_name = source_name.split(".")
+            column_ref = f"df['{column_name}']"
+        else:
+            column_ref = f"df['{source_name}']"
+            
+        # Generate transformation based on target data type
+        if target_type == "INTEGER":
+            return f"pd.to_numeric({column_ref}, errors='coerce').astype('Int64')"
+            
+        elif target_type == "REAL":
+            return f"pd.to_numeric({column_ref}, errors='coerce')"
+            
+        elif target_type == "DATE":
+            return f"pd.to_datetime({column_ref}, errors='coerce')"
+            
+        elif target_type == "TEXT":
+            if source_type in ["INTEGER", "REAL", "DECIMAL"]:
+                return f"{column_ref}.astype(str)"
+            else:
+                return column_ref
+                
+        # Default: direct mapping
+        return column_ref
+
+
+class DataEngineerAgent(BaseAgent):
+    """
+    Data Engineer Agent
+    
+    Responsibilities:
+    - Build the Customer 360 data product
+    - Execute data transformations and loading
+    - Monitor data quality and completeness
+    - Implement data governance rules
+    """
+    
+    def __init__(self, agent_id: str = "data_engineer", 
+                name: str = "Data Engineer", 
+                description: str = "Builds and maintains the Customer 360 data product",
+                config: Optional[Dict[str, Any]] = None):
+        """Initialize the Data Engineer agent."""
+        super().__init__(agent_id, name, description, config)
+    
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """Get capabilities supported by this agent."""
+        return [
+            {
+                "name": "build_customer_360",
+                "description": "Build the Customer 360 view based on validated mappings",
+                "parameters": {
+                    "include_pending": "Whether to include pending mappings"
+                }
+            },
+            {
+                "name": "get_customer_360_data",
+                "description": "Get data from the Customer 360 view",
+                "parameters": {
+                    "limit": "Maximum number of records to return",
+                    "filters": "Optional filters to apply"
+                }
+            },
+            {
+                "name": "get_data_quality_metrics",
+                "description": "Get data quality metrics for the Customer 360 view",
+                "parameters": {}
+            },
+            {
+                "name": "get_data_lineage",
+                "description": "Get data lineage for Customer 360 attributes",
+                "parameters": {
+                    "attribute": "Optional attribute to filter by"
+                }
+            }
+        ]
+    
+    def action_build_customer_360(self, include_pending: bool = False) -> Dict[str, Any]:
+        """
+        Build the Customer 360 view based on validated mappings.
+        
+        In a real system, this would involve an ETL process that:
+        1. Extracts data from source systems
+        2. Applies transformations based on mappings
+        3. Loads data into the Customer 360 table
+        
+        For this demo, we'll simulate the process.
+        
+        Args:
+            include_pending: Whether to include pending mappings
+            
+        Returns:
+            Result of the build process
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get mappings based on status
+            if include_pending:
+                cursor.execute(
+                    """
+                    SELECT 
+                        m.*, 
+                        s.system_name,
+                        ca.attribute_name,
+                        ca.data_type
+                    FROM data_mappings m
+                    JOIN source_systems s ON m.source_system_id = s.id
+                    JOIN customer_attributes ca ON m.target_attribute_id = ca.id
+                    WHERE m.mapping_status IN ('validated', 'proposed')
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT 
+                        m.*, 
+                        s.system_name,
+                        ca.attribute_name,
+                        ca.data_type
+                    FROM data_mappings m
+                    JOIN source_systems s ON m.source_system_id = s.id
+                    JOIN customer_attributes ca ON m.target_attribute_id = ca.id
+                    WHERE m.mapping_status = 'validated'
+                    """
+                )
+                
+            mappings = [dict(row) for row in cursor.fetchall()]
+            
+            if not mappings:
+                return {
+                    "success": False,
+                    "error": "No validated mappings found to build Customer 360"
+                }
+                
+            # Simulate building the Customer 360 view
+            
+            # 1. Create a temporary in-memory customer data store
+            customers_data = {}
+            
+            # 2. For each mapping, simulate extraction and transformation
+            processed_count = 0
+            error_count = 0
+            
+            for mapping in mappings:
+                try:
+                    # Get sample data for this mapping
+                    source_id = mapping['source_system_id']
+                    source_attr = mapping['source_attribute']
+                    target_attr = mapping['attribute_name']
+                    
+                    sample_result = get_sample_data(source_id, source_attr)
+                    
+                    if not sample_result.get("success", False):
+                        logger.warning(f"Failed to get sample data for {source_attr}")
+                        error_count += 1
+                        continue
+                        
+                    # Extract customer ID and values for the mapping
+                    # In a real system, this would be much more sophisticated
+                    # and would handle various customer ID resolution strategies
+                    
+                    # For demo purposes, assume first table has customer IDs
+                    for sample in sample_result.get("sample_data", []):
+                        # Generate a synthetic customer ID if this is from core banking
+                        # In a real system, this would use proper identity resolution
+                        if mapping['system_name'] == "CORE_BANKING" and "customer_id" in sample.get("column_name", ""):
+                            customer_id = sample.get("sample_value", f"C{processed_count}")
+                            
+                            # Initialize customer record if needed
+                            if customer_id not in customers_data:
+                                customers_data[customer_id] = {
+                                    "customer_id": customer_id,
+                                    "data_sources": set([mapping['system_name']])
+                                }
+                            
+                        # For any attribute mapping, add the value to the customer record
+                        # This is a simplified approach for demonstration
+                        if sample.get("column_name") == source_attr.split(".")[-1]:
+                            # Apply transformation (simplified)
+                            # In a real system, execute the transformation logic
+                            
+                            # Use default customer ID if we don't have one yet
+                            default_id = f"C{len(customers_data) + 1}"
+                            customer_id = next(iter(customers_data.keys()), default_id)
+                            
+                            # Initialize customer record if needed
+                            if customer_id not in customers_data:
+                                customers_data[customer_id] = {
+                                    "customer_id": customer_id,
+                                    "data_sources": set([mapping['system_name']])
+                                }
+                            
+                            # Transform and add the value
+                            value = self._apply_simple_transformation(
+                                sample.get("sample_value"),
+                                mapping['data_type']
+                            )
+                            
+                            customers_data[customer_id][target_attr] = value
+                            customers_data[customer_id]["data_sources"].add(mapping['system_name'])
+                            
+                    processed_count += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error processing mapping {mapping['id']}: {e}")
+                    error_count += 1
+            
+            # Convert to final format and prepare for storage
+            customer_records = []
+            for customer_id, data in customers_data.items():
+                # Convert data_sources set to JSON string
+                data["data_sources"] = json.dumps(list(data["data_sources"]))
+                customer_records.append(data)
+            
+            # 3. Insert into Customer 360 table
+            # First, clear existing data
+            cursor.execute("DELETE FROM customer_360")
+            
+            # Then insert new data
+            for record in customer_records:
+                # Build dynamic insert statement based on available fields
+                fields = []
+                placeholders = []
+                values = []
+                
+                for key, value in record.items():
+                    fields.append(key)
+                    placeholders.append("?")
+                    values.append(value)
+                
+                query = f"""
+                    INSERT INTO customer_360 ({', '.join(fields)})
+                    VALUES ({', '.join(placeholders)})
+                """
+                
+                cursor.execute(query, values)
+            
+            # Commit changes
+            conn.commit()
+            conn.close()
+            
+            # Log the build activity
+            self._log_interaction(
+                "build_customer_360",
+                f"Built Customer 360 with {len(customer_records)} customers",
+                f"Processed {processed_count} mappings with {error_count} errors"
+            )
+            
+            return {
+                "success": True,
+                "customer_count": len(customer_records),
+                "mappings_processed": processed_count,
+                "error_count": error_count,
+                "message": f"Customer 360 built with {len(customer_records)} customer records"
+            }
+            
+        except Exception as e:
+            error_msg = f"Error building Customer 360: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_customer_360_data(self, limit: int = 100, 
+                                   filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Get data from the Customer 360 view.
+        
+        Args:
+            limit: Maximum number of records to return
+            filters: Optional filters to apply
+            
+        Returns:
+            Customer 360 data
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Build query based on filters
+            query = "SELECT * FROM customer_360 WHERE 1=1"
+            params = []
+            
+            if filters:
+                for field, value in filters.items():
+                    if field in self._get_customer_360_columns():
+                        query += f" AND {field} = ?"
+                        params.append(value)
+            
+            query += f" LIMIT {limit}"
+            
+            cursor.execute(query, params)
+            customers = [dict(row) for row in cursor.fetchall()]
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "customers": customers,
+                "count": len(customers),
+                "limit": limit
+            }
+        except Exception as e:
+            error_msg = f"Error getting Customer 360 data: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_data_quality_metrics(self) -> Dict[str, Any]:
+        """
+        Get data quality metrics for the Customer 360 view.
         
         Returns:
-            Dict containing the agent's outputs
+            Data quality metrics
         """
-        action = inputs.get('action')
-        
-        if action == 'create_certification':
-            return self._create_certification(
-                inputs.get('certification_type'), 
-                inputs.get('cert_data', {})
-            )
-        elif action == 'check_status':
-            return self._check_status(inputs.get('certification_id'))
-        elif action == 'generate_report':
-            return self._generate_report()
-        else:
-            error_msg = f"Unknown action: {action}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def _create_certification(self, certification_type: str, cert_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new certification request"""
-        if not certification_type:
-            return {"success": False, "error": "Certification type is required"}
-            
-        valid_types = ['data_quality', 'compliance', 'business_value']
-        if certification_type not in valid_types:
-            return {
-                "success": False, 
-                "error": f"Invalid certification type. Must be one of: {', '.join(valid_types)}"
-            }
-            
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Insert new certification
+            # Get Customer 360 columns
+            columns = self._get_customer_360_columns()
+            
+            # Calculate metrics for each column
+            metrics = {}
+            
+            cursor.execute("SELECT COUNT(*) as total FROM customer_360")
+            total_rows = cursor.fetchone()['total']
+            
+            for column in columns:
+                # Skip data_sources column
+                if column == 'data_sources':
+                    continue
+                    
+                # Count non-null values
+                cursor.execute(f"SELECT COUNT(*) as count FROM customer_360 WHERE {column} IS NOT NULL")
+                non_null_count = cursor.fetchone()['count']
+                
+                # Calculate completeness
+                completeness = (non_null_count / total_rows) * 100 if total_rows > 0 else 0
+                
+                # Count distinct values
+                cursor.execute(f"SELECT COUNT(DISTINCT {column}) as count FROM customer_360")
+                distinct_count = cursor.fetchone()['count']
+                
+                metrics[column] = {
+                    "completeness": round(completeness, 2),
+                    "non_null_count": non_null_count,
+                    "distinct_count": distinct_count,
+                    "total_rows": total_rows
+                }
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "metrics": metrics,
+                "total_rows": total_rows
+            }
+        except Exception as e:
+            error_msg = f"Error getting data quality metrics: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_data_lineage(self, attribute: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get data lineage for Customer 360 attributes.
+        
+        Args:
+            attribute: Optional attribute to filter by
+            
+        Returns:
+            Data lineage information
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Build query based on attribute filter
+            query = """
+                SELECT 
+                    m.id, 
+                    s.system_name as source_system,
+                    m.source_attribute,
+                    ca.attribute_name as target_attribute,
+                    m.transformation_logic,
+                    m.mapping_status
+                FROM data_mappings m
+                JOIN source_systems s ON m.source_system_id = s.id
+                JOIN customer_attributes ca ON m.target_attribute_id = ca.id
+            """
+            
+            params = []
+            
+            if attribute:
+                query += " WHERE ca.attribute_name = ?"
+                params.append(attribute)
+                
+            cursor.execute(query, params)
+            lineage = [dict(row) for row in cursor.fetchall()]
+            
+            conn.close()
+            
+            # Group by target attribute
+            lineage_by_attribute = {}
+            
+            for mapping in lineage:
+                target = mapping['target_attribute']
+                
+                if target not in lineage_by_attribute:
+                    lineage_by_attribute[target] = []
+                    
+                lineage_by_attribute[target].append({
+                    "mapping_id": mapping['id'],
+                    "source_system": mapping['source_system'],
+                    "source_attribute": mapping['source_attribute'],
+                    "transformation_logic": mapping['transformation_logic'],
+                    "status": mapping['mapping_status']
+                })
+            
+            return {
+                "success": True,
+                "lineage": lineage_by_attribute,
+                "attribute_count": len(lineage_by_attribute)
+            }
+        except Exception as e:
+            error_msg = f"Error getting data lineage: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def _apply_simple_transformation(self, value: Any, target_type: str) -> Any:
+        """
+        Apply a simple transformation based on target data type.
+        
+        Args:
+            value: Input value
+            target_type: Target data type
+            
+        Returns:
+            Transformed value
+        """
+        if value is None:
+            return None
+            
+        try:
+            if target_type == "INTEGER":
+                return int(float(value))
+            elif target_type == "REAL":
+                return float(value)
+            elif target_type == "DATE":
+                # Simple date parsing
+                import datetime
+                if isinstance(value, (datetime.date, datetime.datetime)):
+                    return value.isoformat()
+                return value  # Let SQLite handle the conversion
+            else:
+                # Default to string
+                return str(value)
+        except Exception:
+            # Return original value if transformation fails
+            return value
+    
+    def _get_customer_360_columns(self) -> List[str]:
+        """
+        Get the list of columns in the Customer 360 table.
+        
+        Returns:
+            List of column names
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("PRAGMA table_info(customer_360)")
+            columns = [row['name'] for row in cursor.fetchall()]
+            
+            conn.close()
+            
+            return columns
+        except Exception as e:
+            logger.error(f"Error getting Customer 360 columns: {e}")
+            return []
+
+
+class CoordinatorAgent(BaseAgent):
+    """
+    Coordinator Agent
+    
+    Responsibilities:
+    - Orchestrate the workflow between agents
+    - Track overall progress of the Customer 360 solution
+    - Handle exceptions and conflicts
+    - Provide status updates and reporting
+    """
+    
+    def __init__(self, agent_id: str = "coordinator", 
+                name: str = "Coordinator", 
+                description: str = "Coordinates the overall Customer 360 workflow",
+                config: Optional[Dict[str, Any]] = None):
+        """Initialize the Coordinator agent."""
+        super().__init__(agent_id, name, description, config)
+        self.workflow_status = {}
+    
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """Get capabilities supported by this agent."""
+        return [
+            {
+                "name": "start_workflow",
+                "description": "Start a Customer 360 workflow",
+                "parameters": {
+                    "workflow_type": "Type of workflow to start"
+                }
+            },
+            {
+                "name": "get_workflow_status",
+                "description": "Get status of current workflow",
+                "parameters": {
+                    "workflow_id": "ID of the workflow"
+                }
+            },
+            {
+                "name": "get_agent_activity",
+                "description": "Get activity report for agents",
+                "parameters": {
+                    "agent_id": "Optional ID of agent to filter by",
+                    "days": "Number of days to include"
+                }
+            },
+            {
+                "name": "get_system_status",
+                "description": "Get overall system status",
+                "parameters": {}
+            }
+        ]
+    
+    def action_start_workflow(self, workflow_type: str) -> Dict[str, Any]:
+        """
+        Start a Customer 360 workflow.
+        
+        Args:
+            workflow_type: Type of workflow to start
+            
+        Returns:
+            Workflow initialization result
+        """
+        # Generate a workflow ID
+        import uuid
+        workflow_id = str(uuid.uuid4())
+        
+        # Initialize workflow status
+        self.workflow_status[workflow_id] = {
+            "workflow_id": workflow_id,
+            "workflow_type": workflow_type,
+            "status": "started",
+            "start_time": self._get_timestamp(),
+            "end_time": None,
+            "steps": [],
+            "current_step": 0,
+            "errors": []
+        }
+        
+        # Define workflow steps based on type
+        if workflow_type == "full_customer_360_build":
+            steps = [
+                "Register source systems",
+                "Scan source systems",
+                "Define customer attributes",
+                "Generate mappings",
+                "Validate mappings",
+                "Build Customer 360",
+                "Generate data quality metrics"
+            ]
+            self.workflow_status[workflow_id]["steps"] = steps
+            
+        elif workflow_type == "data_quality_validation":
+            steps = [
+                "Scan source systems",
+                "Validate existing mappings",
+                "Generate data quality metrics"
+            ]
+            self.workflow_status[workflow_id]["steps"] = steps
+            
+        elif workflow_type == "mapping_certification":
+            steps = [
+                "Review existing mappings",
+                "Create certification requests",
+                "Process certifications"
+            ]
+            self.workflow_status[workflow_id]["steps"] = steps
+            
+        else:
+            self.workflow_status[workflow_id]["status"] = "error"
+            self.workflow_status[workflow_id]["errors"].append(f"Unknown workflow type: {workflow_type}")
+            return {
+                "success": False,
+                "error": f"Unknown workflow type: {workflow_type}"
+            }
+            
+        # Log the workflow start
+        self._log_interaction(
+            "start_workflow",
+            f"Started workflow {workflow_type}",
+            f"Workflow ID: {workflow_id}, Steps: {len(steps)}"
+        )
+        
+        return {
+            "success": True,
+            "workflow_id": workflow_id,
+            "workflow_type": workflow_type,
+            "steps": steps,
+            "message": f"Workflow {workflow_type} started with ID {workflow_id}"
+        }
+    
+    def action_get_workflow_status(self, workflow_id: str) -> Dict[str, Any]:
+        """
+        Get status of current workflow.
+        
+        Args:
+            workflow_id: ID of the workflow
+            
+        Returns:
+            Current workflow status
+        """
+        if workflow_id not in self.workflow_status:
+            return {
+                "success": False,
+                "error": f"Workflow ID {workflow_id} not found"
+            }
+            
+        return {
+            "success": True,
+            "status": self.workflow_status[workflow_id]
+        }
+    
+    def action_get_agent_activity(self, agent_id: Optional[str] = None, 
+                                days: int = 7) -> Dict[str, Any]:
+        """
+        Get activity report for agents.
+        
+        Args:
+            agent_id: Optional ID of agent to filter by
+            days: Number of days to include
+            
+        Returns:
+            Agent activity report
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Calculate date cutoff
+            import datetime
+            cutoff_date = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            # Build query
+            query = """
+                SELECT 
+                    agent_name,
+                    action_type,
+                    details,
+                    timestamp
+                FROM agent_interactions
+                WHERE timestamp >= ?
+            """
+            
+            params = [cutoff_date]
+            
+            if agent_id:
+                query += " AND agent_name = ?"
+                params.append(agent_id)
+                
+            query += " ORDER BY timestamp DESC"
+            
+            cursor.execute(query, params)
+            activities = [dict(row) for row in cursor.fetchall()]
+            
+            # Group by agent
+            activity_by_agent = {}
+            
+            for activity in activities:
+                agent = activity['agent_name']
+                
+                if agent not in activity_by_agent:
+                    activity_by_agent[agent] = []
+                    
+                activity_by_agent[agent].append({
+                    "action_type": activity['action_type'],
+                    "details": activity['details'],
+                    "timestamp": activity['timestamp']
+                })
+            
+            # Calculate summary statistics
+            summary = {
+                "total_activities": len(activities),
+                "agent_count": len(activity_by_agent),
+                "days": days
+            }
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "activities": activity_by_agent,
+                "summary": summary
+            }
+        except Exception as e:
+            error_msg = f"Error getting agent activity: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_system_status(self) -> Dict[str, Any]:
+        """
+        Get overall system status.
+        
+        Returns:
+            System status report
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get counts of key entities
+            cursor.execute("SELECT COUNT(*) as count FROM source_systems")
+            source_count = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count FROM customer_attributes")
+            attribute_count = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count FROM data_mappings")
+            mapping_count = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count, mapping_status FROM data_mappings GROUP BY mapping_status")
+            mapping_status = {row['mapping_status']: row['count'] for row in cursor.fetchall()}
+            
+            cursor.execute("SELECT COUNT(*) as count FROM customer_360")
+            customer_count = cursor.fetchone()['count']
+            
+            cursor.execute("SELECT COUNT(*) as count FROM certifications")
+            certification_count = cursor.fetchone()['count']
+            
+            # Get recent activities
             cursor.execute(
                 """
-                INSERT INTO certifications
-                (certification_type, certification_status, notes)
-                VALUES (?, 'pending', ?)
-                """,
-                (certification_type, cert_data.get('notes', ''))
+                SELECT 
+                    agent_name,
+                    action_type,
+                    details,
+                    timestamp
+                FROM agent_interactions
+                ORDER BY timestamp DESC
+                LIMIT 10
+                """
             )
+            recent_activities = [dict(row) for row in cursor.fetchall()]
             
-            certification_id = cursor.lastrowid
-            conn.commit()
             conn.close()
             
-            # Set expiry date (6 months from now)
-            from datetime import datetime, timedelta
-            expiry_date = (datetime.now() + timedelta(days=180)).strftime("%Y-%m-%d")
-            
-            self.log_interaction(
-                "create_certification",
-                f"Created {certification_type} certification request",
-                f"Created certification ID {certification_id}"
-            )
+            # Compile system status
+            status = {
+                "source_systems": source_count,
+                "customer_attributes": attribute_count,
+                "data_mappings": mapping_count,
+                "mapping_status": mapping_status,
+                "customer_records": customer_count,
+                "certifications": certification_count,
+                "active_workflows": len(self.workflow_status),
+                "recent_activities": recent_activities
+            }
             
             return {
                 "success": True,
-                "certification_id": certification_id,
-                "certification_type": certification_type,
-                "status": "pending",
-                "expiry_date": expiry_date,
-                "message": f"Created {certification_type} certification request (ID: {certification_id})"
+                "status": status,
+                "timestamp": self._get_timestamp()
             }
         except Exception as e:
-            error_msg = f"Error creating certification: {e}"
-            self.logger.error(error_msg)
+            error_msg = f"Error getting system status: {e}"
+            logger.error(error_msg)
             return {"success": False, "error": error_msg}
+
+# Dictionary mapping agent types to classes for easy instantiation
+AGENT_CLASSES = {
+    "data_steward": DataStewardAgent,
+    "domain_expert": DomainExpertAgent,
+    "mapping_agent": MappingAgent,
+    "data_engineer": DataEngineerAgent,
+    "coordinator": CoordinatorAgent
+}
+
+def create_agent(agent_type: str, **kwargs) -> BaseAgent:
+    """
+    Factory function to create an agent of the specified type.
     
-    def _check_status(self, certification_id: int) -> Dict[str, Any]:
-        """Check the status of a certification"""
-        if not certification_id:
-            return {"success": False, "error": "Certification ID is required"}
-            
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT * FROM certifications WHERE id = ?", (certification_id,))
-            certification = cursor.fetchone()
-            conn.close()
-            
-            if not certification:
-                return {"success": False, "error": f"Certification with ID {certification_id} not found"}
-                
-            self.log_interaction(
-                "check_status",
-                f"Checked status of certification ID {certification_id}",
-                f"Status: {certification['certification_status']}"
-            )
-            
-            return {
-                "success": True,
-                "certification": dict(certification),
-                "message": f"Certification status: {certification['certification_status']}"
-            }
-        except Exception as e:
-            error_msg = f"Error checking certification status: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def _generate_report(self) -> Dict[str, Any]:
-        """Generate a certification status report"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get certification statistics
-            cursor.execute(
-                "SELECT certification_type, certification_status, COUNT(*) as count FROM certifications GROUP BY certification_type, certification_status"
-            )
-            cert_stats = [dict(row) for row in cursor.fetchall()]
-            
-            # Get recent certifications
-            cursor.execute(
-                "SELECT * FROM certifications ORDER BY created_at DESC LIMIT 5"
-            )
-            recent_certs = [dict(row) for row in cursor.fetchall()]
-            
-            # Get expiring certifications
-            cursor.execute(
-                "SELECT * FROM certifications WHERE certification_status = 'certified' AND expiry_date <= date('now', '+30 days') ORDER BY expiry_date"
-            )
-            expiring_certs = [dict(row) for row in cursor.fetchall()]
-            
-            conn.close()
-            
-            report = {
-                "statistics": cert_stats,
-                "recent_certifications": recent_certs,
-                "expiring_certifications": expiring_certs,
-                "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "summary": {
-                    "total": sum(stat['count'] for stat in cert_stats),
-                    "certified": sum(stat['count'] for stat in cert_stats if stat['certification_status'] == 'certified'),
-                    "pending": sum(stat['count'] for stat in cert_stats if stat['certification_status'] == 'pending'),
-                    "rejected": sum(stat['count'] for stat in cert_stats if stat['certification_status'] == 'rejected'),
-                    "expiring_soon": len(expiring_certs)
-                }
-            }
-            
-            self.log_interaction(
-                "generate_report",
-                "Generated certification status report",
-                f"Report includes {report['summary']['total']} certifications"
-            )
-            
-            return {
-                "success": True,
-                "report": report,
-                "message": f"Generated certification report with {report['summary']['total']} certifications"
-            }
-        except Exception as e:
-            error_msg = f"Error generating certification report: {e}"
-            self.logger.error(error_msg)
-            return {"success": False, "error": error_msg}
+    Args:
+        agent_type: Type of agent to create
+        **kwargs: Additional parameters to pass to the agent constructor
+        
+    Returns:
+        Instantiated agent
+    """
+    if agent_type not in AGENT_CLASSES:
+        raise ValueError(f"Unknown agent type: {agent_type}")
+        
+    return AGENT_CLASSES[agent_type](**kwargs)
