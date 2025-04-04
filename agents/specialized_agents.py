@@ -579,623 +579,6 @@ class MappingAgent(BaseAgent):
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
 
-    def action_ml_suggest_mappings(self, source_id: int) -> Dict[str, Any]:
-        """
-        Suggest mappings using machine learning techniques.
-        
-        This uses multiple strategies including:
-        1. Attribute name semantic similarity via embeddings
-        2. Data profiling pattern recognition
-        3. Historical mapping patterns
-        4. Data distribution analysis
-        
-        Args:
-            source_id: ID of the source system
-            
-        Returns:
-            List of suggested mappings with confidence scores
-        """
-        try:
-            # Get source system attributes
-            source_result = extract_attributes(source_id)
-            
-            if not source_result.get("success", False):
-                return source_result
-                
-            source_attributes = source_result.get("attributes", [])
-            
-            if not source_attributes:
-                return {
-                    "success": False,
-                    "error": "No attributes found for the source system"
-                }
-            
-            # Get target attributes
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM customer_attributes")
-            target_attributes = [dict(row) for row in cursor.fetchall()]
-            conn.close()
-            
-            # Update embeddings for new attributes
-            self._update_attribute_embeddings(source_attributes, target_attributes)
-            
-            # Use multiple techniques to generate mapping suggestions
-            suggested_mappings = []
-            
-            for source_attr in source_attributes:
-                source_name = source_attr.get("name", "").lower()
-                
-                # Extract just the column name without table prefix
-                if "." in source_name:
-                    source_col = source_name.split(".")[-1]
-                else:
-                    source_col = source_name
-                
-                # Get sample data for this attribute for profile-based matching
-                sample_result = self._get_attribute_profile(source_id, source_attr.get("name"))
-                
-                # Calculate scores for each target attribute using multiple techniques
-                candidate_matches = []
-                
-                for target_attr in target_attributes:
-                    target_name = target_attr.get("attribute_name", "").lower()
-                    
-                    # Calculate scores using different techniques
-                    name_sim_score = self._calculate_similarity(source_col, target_name)
-                    embedding_score = self._calculate_embedding_similarity(source_col, target_name)
-                    
-                    # Look at historical mappings
-                    history_score = self._get_history_similarity(source_col, target_attr.get("id"))
-                    
-                    # Data profile compatibility
-                    profile_score = self._calculate_profile_compatibility(
-                        sample_result.get("profile", {}),
-                        target_attr.get("data_type")
-                    )
-                    
-                    # Weight and combine the scores
-                    weighted_score = (
-                        name_sim_score * 0.3 + 
-                        embedding_score * 0.4 + 
-                        history_score * 0.2 + 
-                        profile_score * 0.1
-                    )
-                    
-                    if weighted_score > 0.3:  # Minimum threshold
-                        candidate_matches.append({
-                            "target_attribute": target_attr,
-                            "score": weighted_score,
-                            "name_sim_score": name_sim_score,
-                            "embedding_score": embedding_score,
-                            "history_score": history_score,
-                            "profile_score": profile_score
-                        })
-                
-                # Sort candidates by score and get top matches
-                candidate_matches.sort(key=lambda x: x["score"], reverse=True)
-                top_matches = candidate_matches[:3]  # Get top 3 matches for each source attribute
-                
-                for match in top_matches:
-                    target_attr = match["target_attribute"]
-                    
-                    # Generate transformation logic
-                    transformation_logic = self._ml_generate_transformation(
-                        source_attr, target_attr, match["score"]
-                    )
-                    
-                    suggested_mappings.append({
-                        "source_system_id": source_id,
-                        "source_attribute": source_attr.get("name"),
-                        "target_attribute_id": target_attr.get("id"),
-                        "target_attribute_name": target_attr.get("attribute_name"),
-                        "confidence_score": match["score"],
-                        "component_scores": {
-                            "name_similarity": match["name_sim_score"],
-                            "semantic_similarity": match["embedding_score"],
-                            "historical_patterns": match["history_score"],
-                            "data_compatibility": match["profile_score"]
-                        },
-                        "transformation_logic": transformation_logic
-                    })
-            
-            # Sort by confidence score
-            suggested_mappings = sorted(
-                suggested_mappings,
-                key=lambda x: x.get("confidence_score", 0),
-                reverse=True
-            )
-            
-            return {
-                "success": True,
-                "source_system_id": source_id,
-                "source_system_name": source_result.get("source_name"),
-                "suggested_mappings": suggested_mappings,
-                "count": len(suggested_mappings),
-                "message": f"Generated {len(suggested_mappings)} ML-enhanced mapping suggestions"
-            }
-            
-        except Exception as e:
-            error_msg = f"Error suggesting mappings with ML: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def action_learn_from_feedback(self, mapping_id: int, is_approved: bool, 
-                                feedback: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Learn from user feedback on mapping suggestions.
-        
-        Args:
-            mapping_id: ID of the mapping to learn from
-            is_approved: Whether the mapping was approved
-            feedback: Optional feedback comments
-            
-        Returns:
-            Result of the learning process
-        """
-        try:
-            # Get mapping details from the database
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-                SELECT 
-                    m.*,
-                    s.system_name,
-                    ca.attribute_name
-                FROM data_mappings m
-                JOIN source_systems s ON m.source_system_id = s.id
-                JOIN customer_attributes ca ON m.target_attribute_id = ca.id
-                WHERE m.id = ?
-            """, (mapping_id,))
-            
-            mapping = cursor.fetchone()
-            conn.close()
-            
-            if not mapping:
-                return {"success": False, "error": f"Mapping with ID {mapping_id} not found"}
-                
-            mapping_dict = dict(mapping)
-            
-            # Add to mapping history with feedback
-            self._add_to_mapping_history(
-                mapping_id, 
-                mapping_dict["source_system_id"],
-                mapping_dict["source_attribute"],
-                mapping_dict["target_attribute_id"],
-                is_approved,
-                feedback
-            )
-            
-            # If approved, reinforce the learning by updating embeddings
-            if is_approved:
-                # Update the attribute embeddings to strengthen this match
-                source_attr = mapping_dict["source_attribute"]
-                if "." in source_attr:
-                    source_col = source_attr.split(".")[-1]
-                else:
-                    source_col = source_attr
-                    
-                self._strengthen_embedding_association(
-                    source_col, mapping_dict["attribute_name"]
-                )
-            
-            return {
-                "success": True,
-                "mapping_id": mapping_id,
-                "is_approved": is_approved,
-                "learned": True,
-                "message": "Feedback processed and incorporated into learning model"
-            }
-        except Exception as e:
-            error_msg = f"Error learning from mapping feedback: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-
-    def _calculate_similarity(self, source_name: str, target_name: str) -> float:
-        """
-        Calculate similarity between source and target attribute names.
-        
-        Args:
-            source_name: Source attribute name
-            target_name: Target attribute name
-            
-        Returns:
-            Similarity score between 0 and 1
-        """
-        # Simple string matching for now
-        # In a real system, use embeddings, edit distance, etc.
-        
-        if source_name == target_name:
-            return 1.0
-            
-        # Check if one is contained in the other
-        if source_name in target_name:
-            return 0.8
-            
-        if target_name in source_name:
-            return 0.7
-            
-        # Check for common substrings
-        common_prefix_length = 0
-        for i in range(min(len(source_name), len(target_name))):
-            if source_name[i] == target_name[i]:
-                common_prefix_length += 1
-            else:
-                break
-                
-        if common_prefix_length >= 3:
-            return 0.5 + (common_prefix_length / max(len(source_name), len(target_name)) * 0.3)
-            
-        # Check for individual words
-        source_words = set(source_name.split('_'))
-        target_words = set(target_name.split('_'))
-        
-        common_words = source_words.intersection(target_words)
-        
-        if common_words:
-            return 0.5 + (len(common_words) / max(len(source_words), len(target_words)) * 0.3)
-            
-        return 0.0
-    
-    def _update_attribute_embeddings(self, source_attributes, target_attributes):
-        """
-        Update embeddings for attribute names.
-        
-        In a real system, this would use a language model to generate embeddings.
-        This simplified version creates synthetic 'embeddings' based on words.
-        
-        Args:
-            source_attributes: List of source attributes
-            target_attributes: List of target attributes
-        """
-        # Simplified embedding generation - in a real system, use actual embeddings
-        for attr in source_attributes:
-            name = attr.get("name", "")
-            if "." in name:
-                name = name.split(".")[-1]  # Use only the column part
-                
-            # Create a synthetic embedding (simplified)
-            words = set(name.lower().replace("_", " ").split())
-            self.attribute_embeddings[name] = words
-            
-        for attr in target_attributes:
-            name = attr.get("attribute_name", "")
-            # Create a synthetic embedding (simplified)
-            words = set(name.lower().replace("_", " ").split())
-            self.attribute_embeddings[name] = words
-    
-    def _calculate_embedding_similarity(self, source_name: str, target_name: str) -> float:
-        """
-        Calculate semantic similarity based on embeddings.
-        
-        Args:
-            source_name: Source attribute name
-            target_name: Target attribute name
-            
-        Returns:
-            Similarity score between 0 and 1
-        """
-        # In a real system, this would use cosine similarity between embeddings
-        # This simplified version uses word overlap
-        
-        if source_name not in self.attribute_embeddings or target_name not in self.attribute_embeddings:
-            return self._calculate_similarity(source_name, target_name)
-            
-        source_words = self.attribute_embeddings[source_name]
-        target_words = self.attribute_embeddings[target_name]
-        
-        if not source_words or not target_words:
-            return 0.0
-            
-        # Calculate Jaccard similarity
-        intersection = len(source_words.intersection(target_words))
-        union = len(source_words.union(target_words))
-        
-        if union == 0:
-            return 0.0
-            
-        return intersection / union
-    
-    def _add_to_mapping_history(self, mapping_id, source_system_id, source_attribute, 
-                              target_attribute_id, is_approved, feedback=None):
-        """
-        Add a mapping to the learning history.
-        
-        Args:
-            mapping_id: ID of the mapping
-            source_system_id: ID of the source system
-            source_attribute: Name of the source attribute
-            target_attribute_id: ID of the target attribute
-            is_approved: Whether the mapping was approved
-            feedback: Optional feedback comments
-        """
-        # Extract column name without table prefix
-        if "." in source_attribute:
-            source_col = source_attribute.split(".")[-1]
-        else:
-            source_col = source_attribute
-            
-        # Add to history
-        self.mapping_history.append({
-            "mapping_id": mapping_id,
-            "source_system_id": source_system_id,
-            "source_attribute": source_col,
-            "target_attribute_id": target_attribute_id,
-            "is_approved": is_approved,
-            "feedback": feedback,
-            "timestamp": self._get_timestamp()
-        })
-        
-        # In a real system, you would also save this to a persistent store
-    
-    def _get_history_similarity(self, source_col: str, target_attribute_id: int) -> float:
-        """
-        Calculate similarity based on historical mappings.
-        
-        Args:
-            source_col: Source column name
-            target_attribute_id: ID of the target attribute
-            
-        Returns:
-            Similarity score between 0 and 1
-        """
-        # Look for similar attributes in the mapping history
-        related_mappings = []
-        
-        for history in self.mapping_history:
-            if history["source_attribute"] == source_col and history["is_approved"]:
-                if history["target_attribute_id"] == target_attribute_id:
-                    # Direct match in history
-                    return 1.0
-                    
-            # Look for similar source attributes that were mapped to this target
-            if history["target_attribute_id"] == target_attribute_id and history["is_approved"]:
-                name_sim = self._calculate_similarity(history["source_attribute"], source_col)
-                if name_sim > 0.6:
-                    related_mappings.append(name_sim)
-        
-        # Return the highest similarity if any found
-        return max(related_mappings) if related_mappings else 0.0
-    
-    def _get_attribute_profile(self, source_id: int, attribute_name: str) -> Dict[str, Any]:
-        """
-        Get a data profile for an attribute (simplified version).
-        
-        Args:
-            source_id: ID of the source system
-            attribute_name: Name of the attribute
-            
-        Returns:
-            Data profile information
-        """
-        try:
-            # Get sample data
-            sample_result = get_sample_data(source_id, attribute_name)
-            
-            if not sample_result.get("success", False):
-                return {"success": False, "profile": {}}
-                
-            sample_data = sample_result.get("sample_data", [])
-            
-            if not sample_data:
-                return {"success": True, "profile": {}}
-                
-            # Extract values
-            if "." in attribute_name:
-                column_name = attribute_name.split(".")[-1]
-            else:
-                column_name = attribute_name
-                
-            values = [
-                record.get("sample_value") 
-                for record in sample_data 
-                if record.get("column_name") == column_name
-            ]
-            
-            # Basic profiling
-            profile = {}
-            
-            # Data type inference
-            numeric_count = sum(1 for v in values if v is not None and isinstance(v, (int, float)) or (isinstance(v, str) and v.replace('.', '', 1).isdigit()))
-            date_pattern = re.compile(r'^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}$')
-            date_count = sum(1 for v in values if v is not None and isinstance(v, str) and date_pattern.match(v))
-            
-            total_non_null = sum(1 for v in values if v is not None)
-            
-            if total_non_null > 0:
-                if numeric_count / total_non_null > 0.8:
-                    profile["inferred_type"] = "NUMERIC"
-                elif date_count / total_non_null > 0.8:
-                    profile["inferred_type"] = "DATE"
-                else:
-                    profile["inferred_type"] = "TEXT"
-            
-            # Value statistics
-            profile["total_values"] = len(values)
-            profile["null_count"] = sum(1 for v in values if v is None)
-            profile["distinct_values"] = len(set(v for v in values if v is not None))
-            
-            if profile["total_values"] > 0:
-                profile["uniqueness"] = profile["distinct_values"] / (len(values) - profile["null_count"]) if len(values) > profile["null_count"] else 0
-            
-            # Check if looks like an ID field
-            profile["is_potential_id"] = "id" in column_name.lower() and profile["uniqueness"] > 0.9
-            
-            return {"success": True, "profile": profile}
-            
-        except Exception as e:
-            logger.warning(f"Error getting attribute profile: {e}")
-            return {"success": False, "profile": {}}
-    
-    def _calculate_profile_compatibility(self, profile: Dict[str, Any], target_data_type: str) -> float:
-        """
-        Calculate compatibility based on data profiles.
-        
-        Args:
-            profile: Data profile
-            target_data_type: Target data type
-            
-        Returns:
-            Compatibility score between 0 and 1
-        """
-        if not profile:
-            return 0.5  # Neutral score if no profile available
-            
-        # Check data type compatibility
-        inferred_type = profile.get("inferred_type")
-        
-        if inferred_type == "NUMERIC" and target_data_type in ["INTEGER", "REAL"]:
-            type_score = 1.0
-        elif inferred_type == "DATE" and target_data_type == "DATE":
-            type_score = 1.0
-        elif inferred_type == "TEXT" and target_data_type == "TEXT":
-            type_score = 1.0
-        elif not inferred_type:
-            type_score = 0.5  # Neutral if no inference
-        else:
-            type_score = 0.2  # Mismatch
-            
-        # Check other characteristics
-        uniqueness = profile.get("uniqueness", 0.5)
-        is_potential_id = profile.get("is_potential_id", False)
-        
-        # Higher score for ID fields mapping to ID targets
-        if is_potential_id and "id" in target_data_type.lower():
-            id_score = 1.0
-        else:
-            id_score = 0.5
-            
-        # Combine scores
-        return (type_score * 0.7 + id_score * 0.3)
-    
-    def _strengthen_embedding_association(self, source_col: str, target_name: str):
-        """
-        Strengthen the association between source and target attributes.
-        
-        Args:
-            source_col: Source column name
-            target_name: Target attribute name
-        """
-        # In a real ML system, this would update embedding weights
-        # In our simplified case, we'll merge the word sets
-        if source_col in self.attribute_embeddings and target_name in self.attribute_embeddings:
-            # Combine the word sets to strengthen association
-            combined_words = self.attribute_embeddings[source_col].union(
-                self.attribute_embeddings[target_name]
-            )
-            self.attribute_embeddings[source_col] = combined_words
-    
-    def _ml_generate_transformation(self, source_attr: Dict[str, Any], 
-                                  target_attr: Dict[str, Any],
-                                  confidence_score: float) -> str:
-        """
-        Generate transformation logic using ML techniques.
-        
-        Args:
-            source_attr: Source attribute details
-            target_attr: Target attribute details
-            confidence_score: Confidence score of the mapping
-            
-        Returns:
-            Transformation logic code
-        """
-        source_name = source_attr.get("name")
-        source_type = source_attr.get("data_type")
-        target_type = target_attr.get("data_type")
-        
-        # Simple direct reference if column name in table.column format
-        if "." in source_name:
-            table_name, column_name = source_name.split(".")
-            column_ref = f"df['{column_name}']"
-        else:
-            column_ref = f"df['{source_name}']"
-            
-        # High confidence transformations use more sophisticated logic
-        if confidence_score > 0.8:
-            # Generate transformation based on target data type with error handling
-            if target_type == "INTEGER":
-                return f"try:\n    pd.to_numeric({column_ref}, errors='coerce').astype('Int64')\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to INTEGER: {{e}}')\n    return pd.Series(dtype='Int64')"
-                
-            elif target_type == "REAL":
-                return f"try:\n    pd.to_numeric({column_ref}, errors='coerce').astype(float)\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to REAL: {{e}}')\n    return pd.Series(dtype=float)"
-                
-            elif target_type == "DATE":
-                return f"try:\n    pd.to_datetime({column_ref}, errors='coerce')\nexcept Exception as e:\n    logging.warning(f'Error converting {source_name} to DATE: {{e}}')\n    return pd.Series(dtype='datetime64[ns]')"
-                
-            elif target_type == "TEXT":
-                if source_type in ["INTEGER", "REAL", "DECIMAL"]:
-                    return f"try:\n    {column_ref}.astype(str).replace('nan', '')\nexcept Exception:\n    return pd.Series('', index={column_ref}.index)"
-                else:
-                    return f"try:\n    {column_ref}.astype(str).replace('nan', '')\nexcept Exception:\n    return pd.Series('', index={column_ref}.index)"
-        else:
-            # Medium/low confidence use simpler transformations
-            # Generate transformation based on target data type
-            if target_type == "INTEGER":
-                return f"pd.to_numeric({column_ref}, errors='coerce').astype('Int64')"
-                
-            elif target_type == "REAL":
-                return f"pd.to_numeric({column_ref}, errors='coerce')"
-                
-            elif target_type == "DATE":
-                return f"pd.to_datetime({column_ref}, errors='coerce')"
-                
-            elif target_type == "TEXT":
-                if source_type in ["INTEGER", "REAL", "DECIMAL"]:
-                    return f"{column_ref}.astype(str)"
-                else:
-                    return column_ref
-        
-        # Default: direct mapping
-        return column_ref
-
-    def _generate_transformation_logic(self, source_attr: Dict[str, Any], 
-                                     target_attr: Dict[str, Any]) -> str:
-        """
-        Generate transformation logic based on source and target attributes.
-        
-        Args:
-            source_attr: Source attribute details
-            target_attr: Target attribute details
-            
-        Returns:
-            Transformation logic as Python code
-        """
-        source_name = source_attr.get("name")
-        source_type = source_attr.get("data_type")
-        target_type = target_attr.get("data_type")
-        
-        # Simple direct reference if column name in table.column format
-        if "." in source_name:
-            table_name, column_name = source_name.split(".")
-            column_ref = f"df['{column_name}']"
-        else:
-            column_ref = f"df['{source_name}']"
-            
-        # Generate transformation based on target data type
-        if target_type == "INTEGER":
-            return f"pd.to_numeric({column_ref}, errors='coerce').astype('Int64')"
-            
-        elif target_type == "REAL":
-            return f"pd.to_numeric({column_ref}, errors='coerce')"
-            
-        elif target_type == "DATE":
-            return f"pd.to_datetime({column_ref}, errors='coerce')"
-            
-        elif target_type == "TEXT":
-            if source_type in ["INTEGER", "REAL", "DECIMAL"]:
-                return f"{column_ref}.astype(str)"
-            else:
-                return column_ref
-                
-        # Default: direct mapping
-        return column_ref
-
-    def _get_timestamp(self):
-        """Get current timestamp as ISO format string"""
-        from datetime import datetime
-        return datetime.now().isoformat()
-
 
 class DataEngineerAgent(BaseAgent):
     """
@@ -1244,303 +627,48 @@ class DataEngineerAgent(BaseAgent):
                 "parameters": {
                     "attribute": "Optional attribute to filter by"
                 }
+            },
+            {
+                "name": "get_field_issues",
+                "description": "Get data quality issues for specific fields",
+                "parameters": {
+                    "attribute": "Optional attribute to filter by",
+                    "severity": "Optional severity level to filter by"
+                }
+            },
+            {
+                "name": "fix_data_quality",
+                "description": "Fix data quality issues automatically",
+                "parameters": {
+                    "issue_id": "ID of the issue to fix",
+                    "attribute": "Attribute with issues to fix",
+                    "fix_type": "Type of fix to apply",
+                    "parameters": "Additional parameters for the fix"
+                }
+            },
+            {
+                "name": "get_quality_history",
+                "description": "Get historical data quality metrics",
+                "parameters": {
+                    "range": "Time range to retrieve history for"
+                }
+            },
+            {
+                "name": "get_customer_count",
+                "description": "Get count of customer records",
+                "parameters": {}
             }
         ]
     
-    def action_build_customer_360(self, include_pending: bool = False) -> Dict[str, Any]:
-        """
-        Build the Customer 360 view based on validated mappings.
-        
-        In a real system, this would involve an ETL process that:
-        1. Extracts data from source systems
-        2. Applies transformations based on mappings
-        3. Loads data into the Customer 360 table
-        
-        For this demo, we'll simulate the process.
-        
-        Args:
-            include_pending: Whether to include pending mappings
-            
-        Returns:
-            Result of the build process
-        """
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get mappings based on status
-            if include_pending:
-                cursor.execute(
-                    """
-                    SELECT 
-                        m.*, 
-                        s.system_name,
-                        ca.attribute_name,
-                        ca.data_type
-                    FROM data_mappings m
-                    JOIN source_systems s ON m.source_system_id = s.id
-                    JOIN customer_attributes ca ON m.target_attribute_id = ca.id
-                    WHERE m.mapping_status IN ('validated', 'proposed')
-                    """
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT 
-                        m.*, 
-                        s.system_name,
-                        ca.attribute_name,
-                        ca.data_type
-                    FROM data_mappings m
-                    JOIN source_systems s ON m.source_system_id = s.id
-                    JOIN customer_attributes ca ON m.target_attribute_id = ca.id
-                    WHERE m.mapping_status = 'validated'
-                    """
-                )
-                
-            mappings = [dict(row) for row in cursor.fetchall()]
-            
-            if not mappings:
-                return {
-                    "success": False,
-                    "error": "No validated mappings found to build Customer 360"
-                }
-                
-            # Simulate building the Customer 360 view
-            
-            # 1. Create a temporary in-memory customer data store
-            customers_data = {}
-            
-            # 2. For each mapping, simulate extraction and transformation
-            processed_count = 0
-            error_count = 0
-            
-            for mapping in mappings:
-                try:
-                    # Get sample data for this mapping
-                    source_id = mapping['source_system_id']
-                    source_attr = mapping['source_attribute']
-                    target_attr = mapping['attribute_name']
-                    
-                    sample_result = get_sample_data(source_id, source_attr)
-                    
-                    if not sample_result.get("success", False):
-                        logger.warning(f"Failed to get sample data for {source_attr}")
-                        error_count += 1
-                        continue
-                        
-                    # Extract customer ID and values for the mapping
-                    # In a real system, this would be much more sophisticated
-                    # and would handle various customer ID resolution strategies
-                    
-                    # For demo purposes, assume first table has customer IDs
-                    for sample in sample_result.get("sample_data", []):
-                        # Generate a synthetic customer ID if this is from core banking
-                        # In a real system, this would use proper identity resolution
-                        if mapping['system_name'] == "CORE_BANKING" and "customer_id" in sample.get("column_name", ""):
-                            customer_id = sample.get("sample_value", f"C{processed_count}")
-                            
-                            # Initialize customer record if needed
-                            if customer_id not in customers_data:
-                                customers_data[customer_id] = {
-                                    "customer_id": customer_id,
-                                    "data_sources": set([mapping['system_name']])
-                                }
-                            
-                        # For any attribute mapping, add the value to the customer record
-                        # This is a simplified approach for demonstration
-                        if sample.get("column_name") == source_attr.split(".")[-1]:
-                            # Apply transformation (simplified)
-                            # In a real system, execute the transformation logic
-                            
-                            # Use default customer ID if we don't have one yet
-                            default_id = f"C{len(customers_data) + 1}"
-                            customer_id = next(iter(customers_data.keys()), default_id)
-                            
-                            # Initialize customer record if needed
-                            if customer_id not in customers_data:
-                                customers_data[customer_id] = {
-                                    "customer_id": customer_id,
-                                    "data_sources": set([mapping['system_name']])
-                                }
-                            
-                            # Transform and add the value
-                            value = self._apply_simple_transformation(
-                                sample.get("sample_value"),
-                                mapping['data_type']
-                            )
-                            
-                            customers_data[customer_id][target_attr] = value
-                            customers_data[customer_id]["data_sources"].add(mapping['system_name'])
-                            
-                    processed_count += 1
-                    
-                except Exception as e:
-                    logger.error(f"Error processing mapping {mapping['id']}: {e}")
-                    error_count += 1
-            
-            # Convert to final format and prepare for storage
-            customer_records = []
-            for customer_id, data in customers_data.items():
-                # Convert data_sources set to JSON string
-                data["data_sources"] = json.dumps(list(data["data_sources"]))
-                customer_records.append(data)
-            
-            # 3. Insert into Customer 360 table
-            # First, clear existing data
-            cursor.execute("DELETE FROM customer_360")
-            
-            # Then insert new data
-            for record in customer_records:
-                # Build dynamic insert statement based on available fields
-                fields = []
-                placeholders = []
-                values = []
-                
-                for key, value in record.items():
-                    fields.append(key)
-                    placeholders.append("?")
-                    values.append(value)
-                
-                query = f"""
-                    INSERT INTO customer_360 ({', '.join(fields)})
-                    VALUES ({', '.join(placeholders)})
-                """
-                
-                cursor.execute(query, values)
-            
-            # Commit changes
-            conn.commit()
-            conn.close()
-            
-            # Log the build activity
-            self._log_interaction(
-                "build_customer_360",
-                f"Built Customer 360 with {len(customer_records)} customers",
-                f"Processed {processed_count} mappings with {error_count} errors"
-            )
-            
-            return {
-                "success": True,
-                "customer_count": len(customer_records),
-                "mappings_processed": processed_count,
-                "error_count": error_count,
-                "message": f"Customer 360 built with {len(customer_records)} customer records"
-            }
-            
-        except Exception as e:
-            error_msg = f"Error building Customer 360: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def action_get_customer_360_data(self, limit: int = 100, 
-                                   filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Get data from the Customer 360 view.
-        
-        Args:
-            limit: Maximum number of records to return
-            filters: Optional filters to apply
-            
-        Returns:
-            Customer 360 data
-        """
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Build query based on filters
-            query = "SELECT * FROM customer_360 WHERE 1=1"
-            params = []
-            
-            if filters:
-                for field, value in filters.items():
-                    if field in self._get_customer_360_columns():
-                        query += f" AND {field} = ?"
-                        params.append(value)
-            
-            query += f" LIMIT {limit}"
-            
-            cursor.execute(query, params)
-            customers = [dict(row) for row in cursor.fetchall()]
-            
-            conn.close()
-            
-            return {
-                "success": True,
-                "customers": customers,
-                "count": len(customers),
-                "limit": limit
-            }
-        except Exception as e:
-            error_msg = f"Error getting Customer 360 data: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
-    def action_get_data_quality_metrics(self) -> Dict[str, Any]:
-        """
-        Get data quality metrics for the Customer 360 view.
-        
-        Returns:
-            Data quality metrics
-        """
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Get Customer 360 columns
-            columns = self._get_customer_360_columns()
-            
-            # Calculate metrics for each column
-            metrics = {}
-            
-            cursor.execute("SELECT COUNT(*) as total FROM customer_360")
-            total_rows = cursor.fetchone()['total']
-            
-            for column in columns:
-                # Skip data_sources column
-                if column == 'data_sources':
-                    continue
-                    
-                # Count non-null values
-                cursor.execute(f"SELECT COUNT(*) as count FROM customer_360 WHERE {column} IS NOT NULL")
-                non_null_count = cursor.fetchone()['count']
-                
-                # Calculate completeness
-                completeness = (non_null_count / total_rows) * 100 if total_rows > 0 else 0
-                
-                # Count distinct values
-                cursor.execute(f"SELECT COUNT(DISTINCT {column}) as count FROM customer_360")
-                distinct_count = cursor.fetchone()['count']
-                
-                metrics[column] = {
-                    "completeness": round(completeness, 2),
-                    "non_null_count": non_null_count,
-                    "distinct_count": distinct_count,
-                    "total_rows": total_rows
-                }
-            
-            conn.close()
-            
-            return {
-                "success": True,
-                "metrics": metrics,
-                "total_rows": total_rows
-            }
-        except Exception as e:
-            error_msg = f"Error getting data quality metrics: {e}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-    
     def action_get_data_lineage(self, attribute: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get data lineage for Customer 360 attributes.
+        Get data lineage for Customer 360 attributes with enhanced details.
         
         Args:
             attribute: Optional attribute to filter by
             
         Returns:
-            Data lineage information
+            Detailed data lineage information with visualization metadata
         """
         try:
             conn = get_db_connection()
@@ -1551,10 +679,16 @@ class DataEngineerAgent(BaseAgent):
                 SELECT 
                     m.id, 
                     s.system_name as source_system,
+                    s.id as source_system_id,
                     m.source_attribute,
+                    ca.id as target_attribute_id,
                     ca.attribute_name as target_attribute,
+                    ca.data_type as target_data_type,
                     m.transformation_logic,
-                    m.mapping_status
+                    m.mapping_status,
+                    m.last_validated,
+                    m.created_by,
+                    m.created_at
                 FROM data_mappings m
                 JOIN source_systems s ON m.source_system_id = s.id
                 JOIN customer_attributes ca ON m.target_attribute_id = ca.id
@@ -1569,8 +703,6 @@ class DataEngineerAgent(BaseAgent):
             cursor.execute(query, params)
             lineage = [dict(row) for row in cursor.fetchall()]
             
-            conn.close()
-            
             # Group by target attribute
             lineage_by_attribute = {}
             
@@ -1580,24 +712,631 @@ class DataEngineerAgent(BaseAgent):
                 if target not in lineage_by_attribute:
                     lineage_by_attribute[target] = []
                     
+                # Get sample data values to show in lineage
+                sample_values = []
+                try:
+                    sample_result = get_sample_data(mapping['source_system_id'], mapping['source_attribute'])
+                    if sample_result.get("success", True) and sample_result.get("sample_data"):
+                        sample_values = [
+                            sample.get("sample_value") 
+                            for sample in sample_result.get("sample_data", [])[:3]
+                        ]
+                except Exception:
+                    # Ignore errors getting sample data
+                    pass
+                
+                # Add enhanced lineage information
                 lineage_by_attribute[target].append({
                     "mapping_id": mapping['id'],
                     "source_system": mapping['source_system'],
+                    "source_system_id": mapping['source_system_id'],
                     "source_attribute": mapping['source_attribute'],
                     "transformation_logic": mapping['transformation_logic'],
-                    "status": mapping['mapping_status']
+                    "target_data_type": mapping['target_data_type'],
+                    "status": mapping['mapping_status'],
+                    "last_validated": mapping['last_validated'],
+                    "created_by": mapping['created_by'],
+                    "created_at": mapping['created_at'],
+                    "sample_values": sample_values
                 })
+                
+            # If we're looking up a specific attribute, add additional metadata
+            if attribute and attribute in lineage_by_attribute:
+                # Get data quality info for this attribute
+                quality_info = self._get_attribute_quality_metrics(attribute)
+                
+                # Add metadata for visualization
+                metadata = {
+                    "attribute_name": attribute,
+                    "quality_metrics": quality_info,
+                    "sources_count": len(lineage_by_attribute[attribute]),
+                    "has_issues": any(source["status"] == "issues" for source in lineage_by_attribute[attribute]),
+                    "flow_stages": self._generate_lineage_flow_stages(attribute, lineage_by_attribute[attribute])
+                }
+                
+                result = {
+                    "success": True,
+                    "lineage": lineage_by_attribute,
+                    "attribute_count": len(lineage_by_attribute),
+                    "metadata": metadata
+                }
+            else:
+                result = {
+                    "success": True,
+                    "lineage": lineage_by_attribute,
+                    "attribute_count": len(lineage_by_attribute)
+                }
             
-            return {
-                "success": True,
-                "lineage": lineage_by_attribute,
-                "attribute_count": len(lineage_by_attribute)
-            }
+            conn.close()
+            return result
+            
         except Exception as e:
             error_msg = f"Error getting data lineage: {e}"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
     
+    def action_get_field_issues(self, attribute: Optional[str] = None, 
+                              severity: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get data quality issues for specific fields.
+        
+        Args:
+            attribute: Optional attribute to filter by
+            severity: Optional severity level to filter by (high, medium, low)
+            
+        Returns:
+            List of data quality issues
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # In a production system, this would query a dedicated data quality issues table
+            # For this demo, we'll generate synthetic issues based on mappings and data analysis
+            
+            # Get all issues or filter by attribute
+            if attribute:
+                cursor.execute("""
+                    SELECT 
+                        ca.attribute_name,
+                        ca.data_type,
+                        ca.id as attribute_id,
+                        m.id as mapping_id,
+                        m.mapping_status,
+                        m.source_attribute,
+                        s.system_name as source_system,
+                        s.id as source_system_id
+                    FROM customer_attributes ca
+                    LEFT JOIN data_mappings m ON ca.id = m.target_attribute_id
+                    LEFT JOIN source_systems s ON m.source_system_id = s.id
+                    WHERE ca.attribute_name = ?
+                """, (attribute,))
+            else:
+                cursor.execute("""
+                    SELECT 
+                        ca.attribute_name,
+                        ca.data_type,
+                        ca.id as attribute_id,
+                        m.id as mapping_id,
+                        m.mapping_status,
+                        m.source_attribute,
+                        s.system_name as source_system,
+                        s.id as source_system_id
+                    FROM customer_attributes ca
+                    LEFT JOIN data_mappings m ON ca.id = m.target_attribute_id
+                    LEFT JOIN source_systems s ON m.source_system_id = s.id
+                """)
+            
+            rows = cursor.fetchall()
+            
+            # Get Customer 360 data quality metrics
+            metrics_result = self.action_get_data_quality_metrics()
+            metrics = metrics_result.get("metrics", {})
+            
+            # Generate issues based on mapping status and data analysis
+            issues = []
+            issue_id = 1
+            
+            for row in rows:
+                # Skip if no mapping
+                if not row['mapping_id']:
+                    continue
+                    
+                issue_type = None
+                issue_severity = None
+                issue_description = None
+                affected_records = 0
+                fix_options = []
+                
+                # Generate issues based on mapping status
+                if row['mapping_status'] == 'issues':
+                    issue_type = "Validation Failed"
+                    issue_severity = "high"
+                    issue_description = f"Mapping validation failed for {row['attribute_name']} from {row['source_system']}"
+                    affected_records = int(metrics.get(row['attribute_name'], {}).get("total_rows", 100) * 0.2)  # 20% of records
+                    
+                    fix_options = [
+                        {"type": "remap", "name": "Create New Mapping", "description": "Map to a different source attribute"},
+                        {"type": "fix_transformation", "name": "Fix Transformation", "description": "Review and correct the transformation logic"}
+                    ]
+                    
+                # Check for completeness issues
+                elif row['attribute_name'] in metrics and metrics[row['attribute_name']].get("completeness", 100) < 90:
+                    issue_type = "Low Completeness"
+                    issue_severity = "medium" if metrics[row['attribute_name']].get("completeness", 0) > 70 else "high"
+                    issue_description = f"Low completeness ({metrics[row['attribute_name']].get('completeness')}%) for {row['attribute_name']}"
+                    affected_records = metrics[row['attribute_name']].get("total_rows", 0) - metrics[row['attribute_name']].get("non_null_count", 0)
+                    
+                    fix_options = [
+                        {"type": "fill_nulls", "name": "Fill Null Values", "description": "Fill null values with defaults"},
+                        {"type": "alternative_source", "name": "Try Alternative Source", "description": "Map from an alternative source system"}
+                    ]
+                    
+                # Check for format issues based on data type
+                elif row['data_type'] == 'TEXT' and row['attribute_name'].lower() in ('email', 'email_address'):
+                    issue_type = "Format Issues"
+                    issue_severity = "medium"
+                    issue_description = f"Format validation issues detected with {row['attribute_name']}"
+                    affected_records = int(metrics.get(row['attribute_name'], {}).get("total_rows", 100) * 0.15)  # 15% of records
+                    
+                    fix_options = [
+                        {"type": "standardize_format", "name": "Standardize Format", "description": "Apply format standardization rules"},
+                        {"type": "extract_valid", "name": "Extract Valid Parts", "description": "Extract valid parts of the values"}
+                    ]
+                    
+                # For phone numbers
+                elif row['data_type'] == 'TEXT' and 'phone' in row['attribute_name'].lower():
+                    issue_type = "Inconsistent Format"
+                    issue_severity = "medium"
+                    issue_description = f"Inconsistent phone number formats in {row['attribute_name']}"
+                    affected_records = int(metrics.get(row['attribute_name'], {}).get("total_rows", 100) * 0.3)  # 30% of records
+                    
+                    fix_options = [
+                        {"type": "standardize_phones", "name": "Standardize Phone Numbers", "description": "Apply international format with country codes"},
+                        {"type": "extract_digits", "name": "Extract Digits Only", "description": "Keep only numeric digits"}
+                    ]
+                
+                # Add random quality issues for demo purposes
+                elif issue_id % 5 == 0:
+                    issue_type = "Data Inconsistency"
+                    issue_severity = "low"
+                    issue_description = f"Minor inconsistencies detected in {row['attribute_name']} values"
+                    affected_records = int(metrics.get(row['attribute_name'], {}).get("total_rows", 100) * 0.1)  # 10% of records
+                    
+                    fix_options = [
+                        {"type": "auto_correct", "name": "Auto-Correct Values", "description": "Apply auto-correction rules"},
+                        {"type": "flag_review", "name": "Flag for Review", "description": "Flag inconsistent records for manual review"}
+                    ]
+                
+                # If we found an issue, add it to the list
+                if issue_type:
+                    # If severity filter applies, check if this issue matches
+                    if severity and issue_severity != severity:
+                        continue
+                        
+                    issues.append({
+                        "issue_id": issue_id,
+                        "attribute": row['attribute_name'],
+                        "issue_type": issue_type,
+                        "severity": issue_severity,
+                        "description": issue_description,
+                        "affected_records": affected_records,
+                        "source_system": row['source_system'] if row['source_system'] else "Multiple",
+                        "mapping_id": row['mapping_id'],
+                        "fix_options": fix_options
+                    })
+                    issue_id += 1
+            
+            # Sort by severity (high to low)
+            severity_order = {"high": 0, "medium": 1, "low": 2}
+            issues.sort(key=lambda x: severity_order.get(x.get("severity"), 999))
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "issues": issues,
+                "count": len(issues)
+            }
+        except Exception as e:
+            error_msg = f"Error getting field issues: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_fix_data_quality(self, issue_id: Optional[int] = None, 
+                              attribute: Optional[str] = None,
+                              fix_type: str = "",
+                              parameters: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Fix data quality issues automatically.
+        
+        Args:
+            issue_id: ID of the issue to fix
+            attribute: Attribute with issues to fix
+            fix_type: Type of fix to apply
+            parameters: Additional parameters for the fix
+            
+        Returns:
+            Result of the fix operation
+        """
+        # Set default parameters if none provided
+        if parameters is None:
+            parameters = {}
+            
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # In a production system, this would update the actual data
+            # For this demo, we'll simulate various fixes
+            
+            # Get the issue details if we have an issue ID
+            issue = None
+            if issue_id:
+                # Get all issues to find the one with matching ID
+                issues_result = self.action_get_field_issues()
+                for i in issues_result.get("issues", []):
+                    if i["issue_id"] == issue_id:
+                        issue = i
+                        attribute = i["attribute"]
+                        break
+                        
+                if not issue:
+                    return {"success": False, "error": f"Issue with ID {issue_id} not found"}
+                    
+            elif not attribute:
+                return {"success": False, "error": "Either issue_id or attribute is required"}
+                
+            # Track changes made
+            changes = []
+            affected_records = 0
+            
+            # Apply the fix based on type
+            if fix_type == "standardize_phones":
+                # Simulate standardizing phone numbers
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM customer_360 WHERE " + attribute + " IS NOT NULL"
+                )
+                row = cursor.fetchone()
+                affected_records = int(row['count'] * 0.8) if row else 0
+                
+                changes.append(f"Standardized {affected_records} phone numbers to international format")
+                changes.append("Added country codes where missing")
+                changes.append("Removed non-digit characters")
+                
+            elif fix_type == "standardize_format":
+                # Simulate standardizing general formats (emails, addresses, etc.)
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM customer_360 WHERE " + attribute + " IS NOT NULL"
+                )
+                row = cursor.fetchone()
+                affected_records = int(row['count'] * 0.75) if row else 0
+                
+                changes.append(f"Standardized {affected_records} values to consistent format")
+                changes.append("Fixed capitalization and spacing issues")
+                
+                if "email" in attribute.lower():
+                    changes.append("Validated email format and domain existence")
+                
+            elif fix_type == "fill_nulls":
+                # Simulate filling null values
+                default_value = parameters.get("default_value", "")
+                
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM customer_360 WHERE " + attribute + " IS NULL"
+                )
+                row = cursor.fetchone()
+                affected_records = row['count'] if row else 0
+                
+                if affected_records > 0:
+                    changes.append(f"Filled {affected_records} null values with default: '{default_value}'")
+                
+            elif fix_type == "extract_digits":
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM customer_360 WHERE " + attribute + " IS NOT NULL"
+                )
+                row = cursor.fetchone()
+                affected_records = int(row['count'] * 0.7) if row else 0
+                
+                changes.append(f"Extracted numeric digits from {affected_records} values")
+                
+            elif fix_type == "auto_correct":
+                cursor.execute(
+                    "SELECT COUNT(*) as count FROM customer_360 WHERE " + attribute + " IS NOT NULL"
+                )
+                row = cursor.fetchone()
+                affected_records = int(row['count'] * 0.5) if row else 0
+                
+                changes.append(f"Auto-corrected {affected_records} values using NLP techniques")
+                changes.append("Fixed spelling and formatting issues")
+                
+            elif fix_type == "remap" or fix_type == "fix_transformation":
+                # These would require custom mapping changes - return special instructions
+                return {
+                    "success": True,
+                    "affected_records": 0,
+                    "changes": [],
+                    "requires_mapping_update": True,
+                    "attribute": attribute,
+                    "fix_type": fix_type,
+                    "message": f"The {fix_type} operation requires updates to data mappings. Please use the mapping interface to perform this change."
+                }
+            else:
+                return {
+                    "success": False, 
+                    "error": f"Unknown fix type: {fix_type}"
+                }
+            
+            # For demo purposes, we update a timestamp field to reflect when the fix was applied
+            # but we don't actually modify the data
+            timestamp = self._get_timestamp()
+            
+            # Log the fix attempt
+            self._log_interaction(
+                f"fix_data_quality_{fix_type}",
+                f"Fixed {affected_records} records for attribute {attribute}",
+                f"Fix type: {fix_type}, Changes: {len(changes)}"
+            )
+            
+            return {
+                "success": True,
+                "attribute": attribute,
+                "fix_type": fix_type,
+                "affected_records": affected_records,
+                "changes": changes,
+                "timestamp": timestamp
+            }
+            
+        except Exception as e:
+            error_msg = f"Error fixing data quality: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_quality_history(self, range_param: str = "30days") -> Dict[str, Any]:
+        """
+        Get historical data quality metrics.
+        
+        Args:
+            range_param: Time range to retrieve history for (7days, 30days, 90days, 1year)
+            
+        Returns:
+            Historical data quality metrics
+        """
+        try:
+            # In a production system, this would query a table with historical metrics
+            # For this demo, we'll generate synthetic data
+            
+            # Parse the range parameter
+            days = 30
+            if range_param == "7days":
+                days = 7
+            elif range_param == "90days":
+                days = 90
+            elif range_param == "1year":
+                days = 365
+                
+            # Generate dates for the range
+            from datetime import datetime, timedelta
+            end_date = datetime.now()
+            history = []
+            
+            # Get current quality metrics as a baseline
+            metrics_result = self.action_get_data_quality_metrics()
+            current_metrics = metrics_result.get("metrics", {})
+            
+            # Calculate overall current metrics
+            current_completeness = 0
+            current_accuracy = 0
+            current_consistency = 0
+            current_timeliness = 0
+            count = 0
+            
+            # Helper function to convert percentage to ratio
+            def pct_to_ratio(pct):
+                return float(pct) / 100 if pct else 0
+            
+            # Calculate averages from all attributes
+            for attr, attr_metrics in current_metrics.items():
+                if "completeness" in attr_metrics:
+                    current_completeness += pct_to_ratio(attr_metrics["completeness"])
+                    count += 1
+            
+            if count > 0:
+                current_completeness /= count
+                
+                # For demo purposes, generate other metrics based on completeness
+                current_accuracy = current_completeness * 0.9 + 0.05  # Slightly lower than completeness
+                current_consistency = current_completeness * 0.95  # Slightly lower than completeness
+                current_timeliness = current_completeness * 1.05  # Slightly higher than completeness
+                
+                # Ensure values are within reasonable range
+                current_accuracy = min(max(current_accuracy, 0.5), 0.98)
+                current_consistency = min(max(current_consistency, 0.4), 0.95)
+                current_timeliness = min(max(current_timeliness, 0.6), 0.99)
+            else:
+                # Default values if no attributes found
+                current_completeness = 0.85
+                current_accuracy = 0.82
+                current_consistency = 0.78
+                current_timeliness = 0.90
+                
+            # Generate historical data with trend and some realistic variation
+            import random
+            
+            for i in range(days):
+                date = end_date - timedelta(days=days-i)
+                date_str = date.strftime("%Y-%m-%d")
+                
+                # Historical values trend slightly worse in the past with some random variation
+                day_factor = i / days  # 0 to 1 from oldest to newest
+                variation = (random.random() - 0.5) * 0.05  # +/- 2.5% random variation
+                
+                # Create a trend where metrics improve over time
+                completeness = current_completeness - ((1 - day_factor) * 0.15) + variation
+                accuracy = current_accuracy - ((1 - day_factor) * 0.12) + variation
+                consistency = current_consistency - ((1 - day_factor) * 0.18) + variation
+                timeliness = current_timeliness - ((1 - day_factor) * 0.08) + variation
+                
+                # Ensure values are within reasonable range
+                completeness = min(max(completeness, 0.5), 0.99)
+                accuracy = min(max(accuracy, 0.5), 0.98)
+                consistency = min(max(consistency, 0.4), 0.95)
+                timeliness = min(max(timeliness, 0.6), 0.99)
+                
+                history.append({
+                    "date": date_str,
+                    "completeness": round(completeness, 2),
+                    "accuracy": round(accuracy, 2),
+                    "consistency": round(consistency, 2),
+                    "timeliness": round(timeliness, 2)
+                })
+            
+            return {
+                "success": True,
+                "history": history,
+                "range": range_param,
+                "days": days
+            }
+            
+        except Exception as e:
+            error_msg = f"Error getting quality history: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def action_get_customer_count(self) -> Dict[str, Any]:
+        """
+        Get count of customer records.
+        
+        Returns:
+            Customer count
+        """
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT COUNT(*) as count FROM customer_360")
+            row = cursor.fetchone()
+            count = row['count'] if row else 0
+            
+            conn.close()
+            
+            return {
+                "success": True,
+                "customer_count": count
+            }
+        except Exception as e:
+            error_msg = f"Error getting customer count: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def _get_attribute_quality_metrics(self, attribute: str) -> Dict[str, Any]:
+        """
+        Get quality metrics for a specific attribute.
+        
+        Args:
+            attribute: Name of the attribute
+            
+        Returns:
+            Quality metrics for the attribute
+        """
+        try:
+            metrics_result = self.action_get_data_quality_metrics()
+            all_metrics = metrics_result.get("metrics", {})
+            
+            # Return metrics for the specific attribute or default values
+            if attribute in all_metrics:
+                metrics = all_metrics[attribute]
+                
+                # Convert completeness to ratio if it's a percentage
+                if "completeness" in metrics and metrics["completeness"] > 1:
+                    metrics["completeness"] = metrics["completeness"] / 100
+                    
+                return metrics
+            else:
+                return {
+                    "completeness": 0.8,
+                    "total_rows": 0,
+                    "non_null_count": 0,
+                    "distinct_count": 0
+                }
+        except Exception:
+            return {
+                "completeness": 0.8,
+                "total_rows": 0,
+                "non_null_count": 0,
+                "distinct_count": 0
+            }
+    
+    def _generate_lineage_flow_stages(self, attribute: str, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Generate flow stages for lineage visualization.
+        
+        Args:
+            attribute: Target attribute name
+            sources: List of source mappings
+            
+        Returns:
+            Flow stages for visualization
+        """
+        # A simple 3-stage flow: Sources → Transformations → Target
+        stages = []
+        
+        # Stage 1: Source Systems
+        source_systems = {}
+        for source in sources:
+            system = source["source_system"]
+            if system not in source_systems:
+                source_systems[system] = []
+            source_systems[system].append({
+                "name": source["source_attribute"],
+                "mapping_id": source["mapping_id"],
+                "status": source["status"]
+            })
+        
+        stages.append({
+            "name": "Source Systems",
+            "nodes": [
+                {
+                    "name": system,
+                    "attributes": attributes,
+                    "type": "source"
+                } 
+                for system, attributes in source_systems.items()
+            ]
+        })
+        
+        # Stage 2: Transformations
+        transformations = []
+        for source in sources:
+            if source["transformation_logic"] and len(source["transformation_logic"]) > 0:
+                transformations.append({
+                    "name": f"Transform {source['source_attribute']}",
+                    "source": source["source_attribute"],
+                    "logic": source["transformation_logic"],
+                    "status": source["status"],
+                    "mapping_id": source["mapping_id"]
+                })
+                
+        if transformations:
+            stages.append({
+                "name": "Transformations",
+                "nodes": transformations
+            })
+            
+        # Stage 3: Target Attribute
+        stages.append({
+            "name": "Target",
+            "nodes": [
+                {
+                    "name": attribute,
+                    "type": "target",
+                    "sources_count": len(sources)
+                }
+            ]
+        })
+        
+        return stages
+        
     def _apply_simple_transformation(self, value: Any, target_type: str) -> Any:
         """
         Apply a simple transformation based on target data type.

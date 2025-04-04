@@ -88,6 +88,48 @@ def get_data_lineage():
         logger.error(f"Error getting data lineage: {e}")
         return format_response(False, error=str(e))
 
+@app.route('/api/fix-data-quality', methods=['POST'])
+def fix_data_quality_issue():
+    """Fix data quality issues automatically"""
+    try:
+        data = request.json
+        issue_id = data.get('issue_id')
+        attribute = data.get('attribute')
+        fix_type = data.get('fix_type')
+        parameters = data.get('parameters', {})
+        
+        if not issue_id and not attribute:
+            return format_response(False, error="Either issue_id or attribute is required")
+            
+        result = data_engineer.action_fix_data_quality(issue_id, attribute, fix_type, parameters)
+        return format_response(result.get('success', False), result)
+    except Exception as e:
+        logger.error(f"Error fixing data quality: {e}")
+        return format_response(False, error=str(e))
+
+@app.route('/api/data-quality/fields')
+def get_field_issues():
+    """Get data quality issues for specific fields"""
+    try:
+        attribute = request.args.get('attribute')
+        severity = request.args.get('severity')
+        result = data_engineer.action_get_field_issues(attribute, severity)
+        return format_response(result.get('success', False), result)
+    except Exception as e:
+        logger.error(f"Error getting field issues: {e}")
+        return format_response(False, error=str(e))
+
+@app.route('/api/data-quality/history')
+def get_quality_history():
+    """Get historical data quality metrics"""
+    try:
+        range_param = request.args.get('range', '30days')
+        result = data_engineer.action_get_quality_history(range_param)
+        return format_response(result.get('success', False), result)
+    except Exception as e:
+        logger.error(f"Error getting quality history: {e}")
+        return format_response(False, error=str(e))
+
 # API Routes for Source Systems
 @app.route('/api/source-systems')
 def get_source_systems():
