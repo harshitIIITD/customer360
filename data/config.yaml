@@ -1,9 +1,9 @@
-# Customer 360 Data Product Configuration
+# Customer 360 Data Product with Agentic Solution Configuration
 
-# LLM Configuration
-llm:
-  provider: "ollama"  # Can be 'openai', 'anthropic', 'ollama'
-  model_name: "llama3"  # Model to use, e.g., 'gpt-4', 'claude-3-opus', 'llama3'
+# Database configuration
+database:
+  path: customer360.db  # Path to the SQLite database file
+  schema_path: database/schema.sql  # Path to the database schema file
   temperature: 0.2
   max_tokens: 2000
 

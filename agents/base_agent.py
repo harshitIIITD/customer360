@@ -1,16 +1,17 @@
 """
-Base Agent Module for Customer 360 Agentic Solution
+Base Agent Module for Customer 360
 
-This module defines the BaseAgent class that all specialized agents will inherit from.
+This module defines the base agent class that all specialized
+agents will inherit from, providing common functionality.
 """
 
-import logging
-import sqlite3
-from abc import ABC, abstractmethod
-from typing import Dict, List, Any, Optional
-from pathlib import Path
 import os
 import sys
+import logging
+import json
+from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Callable
 
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -21,55 +22,155 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
 class BaseAgent(ABC):
     """
-    Base Agent class for the Customer 360 agentic solution.
+    Base agent class that all specialized agents will inherit from.
     
-    All specialized agents should inherit from this class and implement
-    the required abstract methods.
+    This class provides common functionality such as:
+    - Memory management
+    - Interaction history tracking
+    - Communication with other agents
+    - Action execution
     """
     
-    def __init__(self, name: str, description: str, model_name: str = "llama3"):
+    def __init__(self, 
+                agent_id: str, 
+                name: str, 
+                description: str = "", 
+                config: Optional[Dict[str, Any]] = None):
         """
-        Initialize the base agent.
+        Initialize a new agent.
         
         Args:
-            name: The name of the agent
-            description: A description of the agent's role and capabilities
-            model_name: The name of the LLM model to use
+            agent_id: Unique identifier for this agent
+            name: Human-readable name for this agent
+            description: Description of this agent's role and responsibilities
+            config: Configuration dictionary
         """
+        self.agent_id = agent_id
         self.name = name
         self.description = description
-        self.model_name = model_name
-        self.logger = logging.getLogger(f"Agent-{name}")
-        self.logger.info(f"Initializing agent: {name}")
-        self.memory: Dict[str, Any] = {}
+        self.config = config or {}
+        self.memory = {}
+        self.interaction_history = []
+        self.logger = logging.getLogger(f"Agent:{self.name}")
         
-    @abstractmethod
-    def run(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def remember(self, key: str, value: Any) -> None:
         """
-        Run the agent's main functionality.
+        Store a value in the agent's memory.
         
         Args:
-            inputs: Dictionary of input parameters
+            key: Key to store the value under
+            value: Value to store
+        """
+        self.memory[key] = value
+        self.logger.debug(f"Remembered {key}: {value}")
+        
+    def recall(self, key: str) -> Optional[Any]:
+        """
+        Retrieve a value from the agent's memory.
+        
+        Args:
+            key: Key to retrieve
             
         Returns:
-            Dictionary containing the agent's outputs
+            The stored value, or None if not found
+        """
+        value = self.memory.get(key)
+        self.logger.debug(f"Recalled {key}: {value}")
+        return value
+        
+    def communicate(self, target_agent_id: str, message: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Communicate with another agent.
+        
+        Args:
+            target_agent_id: ID of the agent to communicate with
+            message: Message to send
+            
+        Returns:
+            Response from the target agent
+        """
+        # In a real multi-agent system, this would involve network calls,
+        # message queues, or direct function calls to other agents.
+        # For this simulation, we'll just log the communication.
+        
+        self.logger.info(f"Agent {self.name} sending message to {target_agent_id}")
+        
+        # Record the interaction in history
+        interaction = {
+            "timestamp": self._get_timestamp(),
+            "source": self.agent_id,
+            "target": target_agent_id,
+            "message": message
+        }
+        self.interaction_history.append(interaction)
+        
+        # Log the interaction in the database
+        self._log_interaction("communicate", f"Sent message to {target_agent_id}", str(message))
+        
+        # In a real system, we would wait for and return the response here
+        # For now, we'll just return an acknowledgement
+        return {
+            "status": "acknowledged",
+            "message": f"Message received by {target_agent_id} (simulated)"
+        }
+        
+    def execute_action(self, action: str, parameters: Dict[str, Any] = None) -> Dict[str, Any]:
+        """
+        Execute an action based on the agent's capabilities.
+        
+        Args:
+            action: Name of the action to execute
+            parameters: Parameters for the action
+            
+        Returns:
+            Result of the action
+        """
+        parameters = parameters or {}
+        
+        self.logger.info(f"Executing action: {action} with parameters: {parameters}")
+        
+        # Log the action in the database
+        self._log_interaction("execute_action", f"Action: {action}", str(parameters))
+        
+        # Check if this action is implemented
+        action_method = getattr(self, f"action_{action}", None)
+        
+        if action_method and callable(action_method):
+            try:
+                result = action_method(**parameters)
+                return result
+            except Exception as e:
+                error_msg = f"Error executing action {action}: {str(e)}"
+                self.logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+        else:
+            return {
+                "success": False,
+                "error": f"Action {action} not supported by {self.name}"
+            }
+    
+    @abstractmethod
+    def get_capabilities(self) -> List[Dict[str, Any]]:
+        """
+        Get the list of capabilities this agent supports.
+        
+        Returns:
+            List of capability dictionaries with name, description, and parameters
         """
         pass
-    
-    def log_interaction(self, action_type: str, details: str, result: str) -> int:
+        
+    def _log_interaction(self, action_type: str, details: str, result: str) -> None:
         """
-        Log an agent interaction to the database.
+        Log an interaction in the database.
         
         Args:
-            action_type: Type of action performed
-            details: Details about the action
-            result: Result of the action
-            
-        Returns:
-            ID of the created log entry
+            action_type: Type of action (communicate, execute_action, etc.)
+            details: Details of the interaction
+            result: Result of the interaction
         """
         try:
             conn = get_db_connection()
@@ -84,43 +185,18 @@ class BaseAgent(ABC):
             )
             
             conn.commit()
-            log_id = cursor.lastrowid
             conn.close()
             
-            return log_id
-        except sqlite3.Error as e:
-            self.logger.error(f"Database error: {e}")
-            return -1
-        
-    def get_system_prompt(self, additional_context: str = "") -> str:
-        """
-        Generate a system prompt for the LLM.
-        
-        Args:
-            additional_context: Additional context to add to the prompt
+        except Exception as e:
+            self.logger.error(f"Error logging interaction: {e}")
             
-        Returns:
-            Formatted system prompt
-        """
-        base_prompt = f"""You are {self.name}, an AI assistant specialized in {self.description}. 
-        Your role is to help build and maintain a Customer 360 data product for retail banking.
+    def _get_timestamp(self) -> str:
+        """Get a formatted timestamp string."""
+        from datetime import datetime
+        return datetime.now().isoformat()
         
-        The current date is {os.environ.get('CURRENT_DATE', 'unknown')}.
-        """
+    def __str__(self) -> str:
+        return f"{self.name} ({self.agent_id})"
         
-        if additional_context:
-            base_prompt += f"\n\nAdditional context:\n{additional_context}"
-            
-        return base_prompt
-    
-    def get_memory(self, key: str) -> Any:
-        """Get a value from agent memory"""
-        return self.memory.get(key)
-    
-    def set_memory(self, key: str, value: Any) -> None:
-        """Store a value in agent memory"""
-        self.memory[key] = value
-        
-    def clear_memory(self) -> None:
-        """Clear the agent's memory"""
-        self.memory = {}
+    def __repr__(self) -> str:
+        return f"<Agent: {self.name}, ID: {self.agent_id}>"
