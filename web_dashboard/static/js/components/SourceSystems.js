@@ -404,3 +404,9 @@ const SourceDetailsModal = ({ source, onClose, onScan, scanning }) => {
     </div>
   );
 };
+
+// Make component available globally
+window.SourceSystems = SourceSystems;
+
+// Export the component
+export default SourceSystems;

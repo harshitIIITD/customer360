@@ -885,5 +885,8 @@ const DataQuality = () => {
   );
 };
 
-// Export the DataQuality component
+// Make component available globally
+window.DataQuality = DataQuality;
+
+// Export the component
 export default DataQuality;

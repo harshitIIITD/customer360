@@ -1,42 +1,8 @@
 // Customer360 Dashboard - ETL Monitoring Component
 
-import React, { useState, useEffect } from 'react';
-import axios from 'axios';
-import { 
-  Box, 
-  Button, 
-  Typography, 
-  Card, 
-  CardContent,
-  Grid, 
-  Paper, 
-  Tabs, 
-  Tab, 
-  Divider, 
-  CircularProgress,
-  Dialog, 
-  DialogTitle, 
-  DialogContent, 
-  DialogActions,
-  TextField, 
-  FormControl, 
-  InputLabel, 
-  Select, 
-  MenuItem
-} from '@mui/material';
-import { DataGrid, GridToolbar } from '@mui/x-data-grid';
-import { 
-  PlayArrow, 
-  Refresh as RefreshIcon, 
-  CheckCircle, 
-  Pending, 
-  Error, 
-  Stop 
-} from '@mui/icons-material';
-import { useTheme } from '@mui/material/styles';
+const { useState, useEffect } = React;
 
 const ETLMonitoring = () => {
-  const theme = useTheme();
   const [jobs, setJobs] = useState([]);
   const [etlProcesses, setEtlProcesses] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -99,9 +65,8 @@ const ETLMonitoring = () => {
 
   // Helper function to show toast messages
   const showToast = (message, type = 'success') => {
-    // Implementation depends on your toast library
+    // Simple implementation using console
     console.log(`[${type}] ${message}`);
-    // For a real implementation, you might use a toast library or context
   };
   
   const [newJobDialog, setNewJobDialog] = useState(false);
@@ -124,103 +89,15 @@ const ETLMonitoring = () => {
   const [selectedJob, setSelectedJob] = useState(null);
   const [jobDetailsOpen, setJobDetailsOpen] = useState(false);
 
-  // Status colors
-  const statusColors = {
-    queued: theme.palette.info.light,
-    running: theme.palette.warning.main,
-    completed: theme.palette.success.main,
-    failed: theme.palette.error.main,
-    cancelled: theme.palette.grey[500]
-  };
-
-  // Columns for job tables
-  const jobColumns = [
-    { 
-      field: 'job_id', 
-      headerName: 'ID', 
-      width: 90 
-    },
-    { 
-      field: 'job_name', 
-      headerName: 'Name',
-      width: 200 
-    },
-    { 
-      field: 'job_type', 
-      headerName: 'Type',
-      width: 150,
-      valueFormatter: (params) => {
-        const type = params.value.replace('_', ' ');
-        return type.charAt(0).toUpperCase() + type.slice(1);
-      }
-    },
-    { 
-      field: 'source_id', 
-      headerName: 'Source',
-      width: 150,
-      valueFormatter: (params) => {
-        const source = sources.find(s => s.id === params.value);
-        return source ? source.name : params.value;
-      }
-    },
-    { 
-      field: 'status', 
-      headerName: 'Status',
-      width: 130,
-      renderCell: (params) => (
-        <Box sx={{ 
-          display: 'flex', 
-          alignItems: 'center', 
-          color: statusColors[params.value] || theme.palette.text.primary 
-        }}>
-          {params.value === 'completed' && <CheckCircle sx={{ mr: 1 }} />}
-          {params.value === 'running' && <Pending sx={{ mr: 1 }} />}
-          {params.value === 'failed' && <Error sx={{ mr: 1 }} />}
-          <span>{params.value.charAt(0).toUpperCase() + params.value.slice(1)}</span>
-        </Box>
-      )
-    },
-    { 
-      field: 'created_at', 
-      headerName: 'Created',
-      width: 180,
-      valueFormatter: (params) => new Date(params.value).toLocaleString()
-    },
-    {
-      field: 'actions',
-      headerName: 'Actions',
-      width: 150,
-      renderCell: (params) => (
-        <Box>
-          <Button 
-            size="small" 
-            onClick={() => viewJobDetails(params.row)}
-          >
-            Details
-          </Button>
-          {params.row.status === 'running' && (
-            <Button 
-              size="small" 
-              color="error"
-              onClick={() => cancelJob(params.row.job_id)}
-            >
-              <Stop fontSize="small" />
-            </Button>
-          )}
-        </Box>
-      )
-    }
-  ];
-
   // Load jobs and statistics on component mount
   useEffect(() => {
     fetchData();
   }, []);
 
   // Handle tab change
-  const handleTabChange = (event, newValue) => {
-    setTabValue(newValue);
-    fetchJobs(newValue === 0 ? 'active' : 'all');
+  const handleTabChange = (tabIndex) => {
+    setTabValue(tabIndex);
+    fetchJobs(tabIndex === 0 ? 'active' : 'all');
   };
 
   // Fetch both jobs and statistics
@@ -339,341 +216,325 @@ const ETLMonitoring = () => {
     }));
   };
 
+  const getJobStatusBadgeClass = (status) => {
+    switch (status?.toLowerCase()) {
+      case 'completed': return 'bg-success';
+      case 'running': return 'bg-warning';
+      case 'queued': return 'bg-info';
+      case 'failed': return 'bg-danger';
+      default: return 'bg-secondary';
+    }
+  };
+
   return (
-    <Box sx={{ p: 3 }}>
-      <Box sx={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center',
-        mb: 3
-      }}>
-        <Typography variant="h4" component="h2">ETL Process Monitoring</Typography>
-        <Box>
-          <Button 
-            variant="contained" 
-            color="primary" 
-            startIcon={<PlayArrow />}
-            onClick={() => setNewJobDialog(true)}
-            sx={{ mr: 1 }}
-          >
-            New ETL Job
-          </Button>
-          <Button 
-            variant="outlined"
-            startIcon={<RefreshIcon />}
-            onClick={fetchData}
-          >
-            Refresh
-          </Button>
-        </Box>
-      </Box>
+    <div className="etl-monitoring-container">
+      <div className="mb-4">
+        <div className="d-flex justify-content-between align-items-center mb-3">
+          <h2>ETL Process Monitoring</h2>
+          <div>
+            <button className="btn btn-primary me-2" onClick={() => setNewJobDialog(true)}>
+              <i className="bi bi-play-fill"></i> New ETL Job
+            </button>
+            <button className="btn btn-outline-secondary" onClick={fetchData}>
+              <i className="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+      </div>
 
-      <Grid container spacing={3} sx={{ mb: 3 }}>
-        <Grid item xs={12} md={3}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" component="div">Total Jobs</Typography>
-              <Typography variant="h3" component="div">{statistics.total_jobs}</Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card sx={{ backgroundColor: theme.palette.success.light }}>
-            <CardContent>
-              <Typography variant="h6" component="div">Completed</Typography>
-              <Typography variant="h3" component="div">{statistics.completed_jobs}</Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card sx={{ backgroundColor: theme.palette.warning.light }}>
-            <CardContent>
-              <Typography variant="h6" component="div">In Progress</Typography>
-              <Typography variant="h3" component="div">{statistics.processing_jobs}</Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-        <Grid item xs={12} md={3}>
-          <Card sx={{ backgroundColor: theme.palette.error.light }}>
-            <CardContent>
-              <Typography variant="h6" component="div">Failed</Typography>
-              <Typography variant="h3" component="div">{statistics.failed_jobs}</Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
+      {/* Statistics Cards */}
+      <div className="row mb-4">
+        <div className="col-md-3 mb-3">
+          <div className="card">
+            <div className="card-body">
+              <h5 className="card-title">Total Jobs</h5>
+              <h3>{statistics.total_jobs}</h3>
+            </div>
+          </div>
+        </div>
+        <div className="col-md-3 mb-3">
+          <div className="card bg-success bg-opacity-10">
+            <div className="card-body">
+              <h5 className="card-title">Completed</h5>
+              <h3>{statistics.completed_jobs}</h3>
+            </div>
+          </div>
+        </div>
+        <div className="col-md-3 mb-3">
+          <div className="card bg-warning bg-opacity-10">
+            <div className="card-body">
+              <h5 className="card-title">In Progress</h5>
+              <h3>{statistics.processing_jobs}</h3>
+            </div>
+          </div>
+        </div>
+        <div className="col-md-3 mb-3">
+          <div className="card bg-danger bg-opacity-10">
+            <div className="card-body">
+              <h5 className="card-title">Failed</h5>
+              <h3>{statistics.failed_jobs}</h3>
+            </div>
+          </div>
+        </div>
+      </div>
 
-      <Paper sx={{ mb: 3 }}>
-        <Tabs 
-          value={tabValue} 
-          onChange={handleTabChange}
-          indicatorColor="primary"
-          textColor="primary"
-          variant="fullWidth"
-        >
-          <Tab label="Active Jobs" />
-          <Tab label="Job History" />
-        </Tabs>
-        <Divider />
-        <Box sx={{ p: 2 }}>
+      {/* Tabs */}
+      <div className="card mb-4">
+        <div className="card-header">
+          <ul className="nav nav-tabs card-header-tabs">
+            <li className="nav-item">
+              <button 
+                className={`nav-link ${tabValue === 0 ? 'active' : ''}`} 
+                onClick={() => handleTabChange(0)}
+              >
+                Active Jobs
+              </button>
+            </li>
+            <li className="nav-item">
+              <button 
+                className={`nav-link ${tabValue === 1 ? 'active' : ''}`}
+                onClick={() => handleTabChange(1)}
+              >
+                Job History
+              </button>
+            </li>
+          </ul>
+        </div>
+        <div className="card-body">
           {loading ? (
-            <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-              <CircularProgress />
-            </Box>
+            <div className="text-center py-5">
+              <div className="spinner-border text-primary" role="status">
+                <span className="visually-hidden">Loading...</span>
+              </div>
+            </div>
           ) : (
-            <div style={{ height: 400, width: '100%' }}>
-              <DataGrid
-                rows={jobs}
-                columns={jobColumns}
-                pageSize={10}
-                rowsPerPageOptions={[10, 25, 50]}
-                getRowId={(row) => row.job_id}
-                components={{
-                  Toolbar: GridToolbar,
-                }}
-              />
+            <div className="table-responsive">
+              <table className="table table-hover">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jobs.length > 0 ? jobs.map(job => (
+                    <tr key={job.job_id}>
+                      <td>{job.job_id}</td>
+                      <td>{job.job_name}</td>
+                      <td>{job.job_type.replace('_', ' ').charAt(0).toUpperCase() + job.job_type.replace('_', ' ').slice(1)}</td>
+                      <td>{sources.find(s => s.id === job.source_id)?.name || job.source_id}</td>
+                      <td>
+                        <span className={`badge ${getJobStatusBadgeClass(job.status)}`}>
+                          {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
+                        </span>
+                      </td>
+                      <td>{new Date(job.created_at).toLocaleString()}</td>
+                      <td>
+                        <button 
+                          className="btn btn-sm btn-outline-secondary me-1"
+                          onClick={() => viewJobDetails(job)}
+                        >
+                          Details
+                        </button>
+                        {job.status === 'running' && (
+                          <button 
+                            className="btn btn-sm btn-outline-danger"
+                            onClick={() => cancelJob(job.job_id)}
+                          >
+                            <i className="bi bi-stop-fill"></i>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )) : (
+                    <tr>
+                      <td colSpan="7" className="text-center">No jobs found</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           )}
-        </Box>
-      </Paper>
+        </div>
+      </div>
 
-      {/* New Job Dialog */}
-      <Dialog open={newJobDialog} onClose={() => setNewJobDialog(false)} maxWidth="sm" fullWidth>
-        <DialogTitle>Submit New ETL Job</DialogTitle>
-        <DialogContent>
-          <Box sx={{ mt: 2 }}>
-            <TextField
-              name="job_name"
-              label="Job Name"
-              fullWidth
-              value={newJob.job_name}
-              onChange={handleJobFormChange}
-              sx={{ mb: 3 }}
-            />
-            <FormControl fullWidth sx={{ mb: 3 }}>
-              <InputLabel>Job Type</InputLabel>
-              <Select
-                name="job_type"
-                value={newJob.job_type}
-                onChange={handleJobFormChange}
-                label="Job Type"
-              >
-                {jobTypes.map((type) => (
-                  <MenuItem key={type.value} value={type.value}>
-                    {type.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth>
-              <InputLabel>Data Source</InputLabel>
-              <Select
-                name="source_id"
-                value={newJob.source_id}
-                onChange={handleJobFormChange}
-                label="Data Source"
-              >
-                {sources.map((source) => (
-                  <MenuItem key={source.id} value={source.id}>
-                    {source.name}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          </Box>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setNewJobDialog(false)}>Cancel</Button>
-          <Button 
-            onClick={submitJob} 
-            variant="contained" 
-            color="primary"
-            disabled={!newJob.job_name || !newJob.source_id}
-          >
-            Submit Job
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      {/* Job Details Dialog */}
-      <Dialog open={jobDetailsOpen} onClose={() => setJobDetailsOpen(false)} maxWidth="md" fullWidth>
-        {selectedJob && (
-          <>
-            <DialogTitle>
-              Job Details: {selectedJob.job_name}
-              <Typography variant="subtitle2">ID: {selectedJob.job_id}</Typography>
-            </DialogTitle>
-            <DialogContent dividers>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Status</Typography>
-                  <Typography variant="body1" sx={{ color: statusColors[selectedJob.status] }}>
-                    {selectedJob.status.charAt(0).toUpperCase() + selectedJob.status.slice(1)}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Type</Typography>
-                  <Typography variant="body1">
-                    {selectedJob.job_type.replace('_', ' ').charAt(0).toUpperCase() + 
-                     selectedJob.job_type.replace('_', ' ').slice(1)}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Created</Typography>
-                  <Typography variant="body1">
-                    {new Date(selectedJob.created_at).toLocaleString()}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Updated</Typography>
-                  <Typography variant="body1">
-                    {selectedJob.updated_at ? new Date(selectedJob.updated_at).toLocaleString() : 'N/A'}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Source</Typography>
-                  <Typography variant="body1">
-                    {sources.find(s => s.id === selectedJob.source_id)?.name || selectedJob.source_id}
-                  </Typography>
-                </Grid>
-                <Grid item xs={6}>
-                  <Typography variant="subtitle1">Created By</Typography>
-                  <Typography variant="body1">{selectedJob.created_by || 'System'}</Typography>
-                </Grid>
+      {/* Job Details Modal */}
+      {jobDetailsOpen && selectedJob && (
+        <div className="modal fade show" style={{ display: 'block' }} tabIndex="-1">
+          <div className="modal-dialog modal-lg">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Job Details: {selectedJob.job_name}</h5>
+                <button 
+                  type="button" 
+                  className="btn-close" 
+                  onClick={() => setJobDetailsOpen(false)}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="row">
+                  <div className="col-md-6">
+                    <p><strong>Status:</strong> <span className={`badge ${getJobStatusBadgeClass(selectedJob.status)}`}>
+                      {selectedJob.status.charAt(0).toUpperCase() + selectedJob.status.slice(1)}
+                    </span></p>
+                    <p><strong>Type:</strong> {selectedJob.job_type.replace('_', ' ').charAt(0).toUpperCase() + selectedJob.job_type.replace('_', ' ').slice(1)}</p>
+                    <p><strong>Created:</strong> {new Date(selectedJob.created_at).toLocaleString()}</p>
+                  </div>
+                  <div className="col-md-6">
+                    <p><strong>Source:</strong> {sources.find(s => s.id === selectedJob.source_id)?.name || selectedJob.source_id}</p>
+                    <p><strong>Updated:</strong> {selectedJob.updated_at ? new Date(selectedJob.updated_at).toLocaleString() : 'N/A'}</p>
+                    <p><strong>Created By:</strong> {selectedJob.created_by || 'System'}</p>
+                  </div>
+                </div>
                 
                 {selectedJob.start_time && selectedJob.end_time && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle1">Duration</Typography>
-                    <Typography variant="body1">
-                      {selectedJob.duration ? `${selectedJob.duration.toFixed(2)} seconds` : 'Calculating...'}
-                    </Typography>
-                  </Grid>
+                  <div className="row">
+                    <div className="col-12">
+                      <p><strong>Duration:</strong> {selectedJob.duration ? `${selectedJob.duration.toFixed(2)} seconds` : 'Calculating...'}</p>
+                    </div>
+                  </div>
                 )}
 
                 {selectedJob.error_message && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle1" color="error">Error Message</Typography>
-                    <Paper 
-                      sx={{ 
-                        p: 2, 
-                        backgroundColor: theme.palette.error.light,
-                        maxHeight: 150,
-                        overflow: 'auto'
-                      }}
-                    >
-                      <Typography variant="body2" component="pre">
-                        {selectedJob.error_message}
-                      </Typography>
-                    </Paper>
-                  </Grid>
+                  <div className="mt-3">
+                    <h6 className="text-danger">Error Message</h6>
+                    <div className="bg-danger bg-opacity-10 p-2 rounded" style={{ maxHeight: '150px', overflow: 'auto' }}>
+                      <pre className="mb-0">{selectedJob.error_message}</pre>
+                    </div>
+                  </div>
                 )}
                 
                 {selectedJob.result && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle1">Result Summary</Typography>
-                    <Paper 
-                      sx={{ 
-                        p: 2,
-                        backgroundColor: theme.palette.background.default,
-                        maxHeight: 150,
-                        overflow: 'auto'
-                      }}
-                    >
-                      <Typography variant="body2" component="pre">
-                        {JSON.stringify(selectedJob.result, null, 2)}
-                      </Typography>
-                    </Paper>
-                  </Grid>
+                  <div className="mt-3">
+                    <h6>Result Summary</h6>
+                    <div className="bg-light p-2 rounded" style={{ maxHeight: '150px', overflow: 'auto' }}>
+                      <pre className="mb-0">{JSON.stringify(selectedJob.result, null, 2)}</pre>
+                    </div>
+                  </div>
                 )}
 
-                {/* Add job steps section */}
                 {selectedJob.steps && selectedJob.steps.length > 0 && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle1" sx={{ mt: 2 }}>Job Steps</Typography>
-                    <Paper sx={{ p: 1, mt: 1 }}>
+                  <div className="mt-3">
+                    <h6>Job Steps</h6>
+                    <div className="list-group">
                       {selectedJob.steps.map((step, index) => (
-                        <Box key={step.step_id} sx={{ 
-                          p: 1, 
-                          mb: 1, 
-                          backgroundColor: theme.palette.action.hover,
-                          borderRadius: 1
-                        }}>
-                          <Grid container spacing={1}>
-                            <Grid item xs={6}>
-                              <Typography variant="subtitle2">{step.step_name}</Typography>
-                              <Typography variant="body2" sx={{ color: statusColors[step.status] }}>
+                        <div key={step.step_id} className="list-group-item">
+                          <div className="row">
+                            <div className="col-md-6">
+                              <h6 className="mb-1">{step.step_name}</h6>
+                              <span className={`badge ${getJobStatusBadgeClass(step.status)}`}>
                                 {step.status.charAt(0).toUpperCase() + step.status.slice(1)}
-                              </Typography>
-                            </Grid>
-                            <Grid item xs={6}>
-                              <Typography variant="body2">
-                                Processed: {step.records_processed} records
-                              </Typography>
-                              <Typography variant="body2">
-                                Failed: {step.records_failed} records
-                              </Typography>
-                            </Grid>
-                          </Grid>
-                        </Box>
+                              </span>
+                            </div>
+                            <div className="col-md-6">
+                              <p className="mb-1">Processed: {step.records_processed} records</p>
+                              <p className="mb-1">Failed: {step.records_failed} records</p>
+                            </div>
+                          </div>
+                        </div>
                       ))}
-                    </Paper>
-                  </Grid>
+                    </div>
+                  </div>
                 )}
-
-                {/* Add logs section */}
-                {selectedJob.logs && selectedJob.logs.length > 0 && (
-                  <Grid item xs={12}>
-                    <Typography variant="subtitle1" sx={{ mt: 2 }}>Job Logs</Typography>
-                    <Paper 
-                      sx={{ 
-                        mt: 1, 
-                        maxHeight: 200, 
-                        overflow: 'auto', 
-                        backgroundColor: theme.palette.grey[900],
-                        color: theme.palette.common.white,
-                        fontFamily: 'monospace'
-                      }}
-                    >
-                      {selectedJob.logs.map((log, index) => (
-                        <Box key={index} sx={{ p: 0.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
-                          <Typography variant="caption" 
-                            sx={{ 
-                              color: log.log_level === 'ERROR' 
-                                ? theme.palette.error.light 
-                                : log.log_level === 'WARNING'
-                                ? theme.palette.warning.light
-                                : theme.palette.info.light
-                            }}
-                          >
-                            [{new Date(log.timestamp).toLocaleString()}] [{log.log_level}]
-                          </Typography>
-                          <Typography variant="body2">{log.message}</Typography>
-                        </Box>
-                      ))}
-                    </Paper>
-                  </Grid>
+              </div>
+              <div className="modal-footer">
+                {selectedJob.status === 'running' && (
+                  <button 
+                    className="btn btn-danger"
+                    onClick={() => {
+                      cancelJob(selectedJob.job_id);
+                      setJobDetailsOpen(false);
+                    }}
+                  >
+                    Cancel Job
+                  </button>
                 )}
-              </Grid>
-            </DialogContent>
-            <DialogActions>
-              {selectedJob.status === 'running' && (
-                <Button 
-                  color="error" 
-                  onClick={() => {
-                    cancelJob(selectedJob.job_id);
-                    setJobDetailsOpen(false);
-                  }}
+                <button className="btn btn-secondary" onClick={() => setJobDetailsOpen(false)}>Close</button>
+              </div>
+            </div>
+          </div>
+          <div className="modal-backdrop fade show"></div>
+        </div>
+      )}
+      
+      {/* New Job Dialog */}
+      {newJobDialog && (
+        <div className="modal fade show" style={{ display: 'block' }} tabIndex="-1">
+          <div className="modal-dialog">
+            <div className="modal-content">
+              <div className="modal-header">
+                <h5 className="modal-title">Submit New ETL Job</h5>
+                <button 
+                  type="button" 
+                  className="btn-close" 
+                  onClick={() => setNewJobDialog(false)}
+                ></button>
+              </div>
+              <div className="modal-body">
+                <div className="mb-3">
+                  <label htmlFor="job_name" className="form-label">Job Name</label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    id="job_name"
+                    name="job_name"
+                    value={newJob.job_name}
+                    onChange={handleJobFormChange}
+                  />
+                </div>
+                <div className="mb-3">
+                  <label htmlFor="job_type" className="form-label">Job Type</label>
+                  <select
+                    className="form-select"
+                    id="job_type"
+                    name="job_type"
+                    value={newJob.job_type}
+                    onChange={handleJobFormChange}
+                  >
+                    {jobTypes.map(type => (
+                      <option key={type.value} value={type.value}>{type.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="mb-3">
+                  <label htmlFor="source_id" className="form-label">Data Source</label>
+                  <select
+                    className="form-select"
+                    id="source_id"
+                    name="source_id"
+                    value={newJob.source_id}
+                    onChange={handleJobFormChange}
+                  >
+                    <option value="">Select a source</option>
+                    {sources.map(source => (
+                      <option key={source.id} value={source.id}>{source.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button className="btn btn-secondary" onClick={() => setNewJobDialog(false)}>Cancel</button>
+                <button 
+                  className="btn btn-primary" 
+                  onClick={submitJob}
+                  disabled={!newJob.job_name || !newJob.source_id}
                 >
-                  Cancel Job
-                </Button>
-              )}
-              <Button onClick={() => setJobDetailsOpen(false)}>Close</Button>
-            </DialogActions>
-          </>
-        )}
-      </Dialog>
-    </Box>
+                  Submit Job
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="modal-backdrop fade show"></div>
+        </div>
+      )}
+    </div>
   );
 };
 
-export default ETLMonitoring;
+// Make component available globally
+window.ETLMonitoring = ETLMonitoring;

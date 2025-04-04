@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 
 # Add project root to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
+from .config_list import get_config_list
 
 # Configure logging
 logging.basicConfig(
@@ -37,9 +38,13 @@ def create_customer360_groupchat(agents, config):
         data_steward = agents["data_steward"]
         domain_expert = agents["domain_expert"]
         data_engineer = agents["data_engineer"] 
-        mapping_agent = agents["mapping"]
-        certification_agent = agents["certification"]
+        mapping_agent = agents["mapping_specialist"]  # Changed from "mapping" to "mapping_specialist"
+        certification_agent = agents.get("certification")  # Make this optional
         user_proxy = agents["user_proxy"]
+        
+        # Get the configuration list for the LLM
+        provider = config.get('llm', {}).get('provider', 'ollama')
+        config_list = get_config_list(provider)
         
         # Create the group chat
         groupchat = autogen.GroupChat(
@@ -48,8 +53,7 @@ def create_customer360_groupchat(agents, config):
                 data_steward, 
                 domain_expert,
                 data_engineer,
-                mapping_agent,
-                certification_agent
+                mapping_agent
             ],
             messages=[],
             max_round=config.get("autogen", {}).get("max_round", 10)
@@ -58,7 +62,7 @@ def create_customer360_groupchat(agents, config):
         # Create the group chat manager
         manager = autogen.GroupChatManager(
             groupchat=groupchat,
-            llm_config={"config_list": []}  # Empty config list since agents have their own configs
+            llm_config={"config_list": config_list}  # Use the same config list as the agents
         )
         
         return {
@@ -164,9 +168,18 @@ def run_customer360_task(groupchat, workflow_config):
             message=task_prompt
         )
         
-        # Check the last message to see if the task was completed
+        # Check the chat history to see if the task was completed
         chat_history = groupchat["chat"].messages
-        if chat_history and "TASK COMPLETED" in chat_history[-1].get("content", ""):
+        
+        # Look for "TASK COMPLETED" in any of the messages
+        task_completed = False
+        for message in chat_history:
+            if "TASK COMPLETED" in message.get("content", ""):
+                task_completed = True
+                break
+                
+        if task_completed:
+            logger.info("Task completed successfully")
             return True
         else:
             logger.warning("Task did not complete successfully - no completion message found")

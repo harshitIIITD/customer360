@@ -445,3 +445,9 @@ const renderDataSources = (dataSources) => {
     </div>
   );
 };
+
+// Make component available globally
+window.Customer360Data = Customer360Data;
+
+// Export the component
+export default Customer360Data;

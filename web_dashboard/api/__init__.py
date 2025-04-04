@@ -12,3 +12,8 @@ api = Blueprint('api', __name__, url_prefix='/api')
 
 # Import all routes
 from web_dashboard.api import etl_routes
+from web_dashboard.api import general_routes
+
+# Register sub-blueprints
+api.register_blueprint(etl_routes.etl_bp)
+api.register_blueprint(general_routes.general_bp)

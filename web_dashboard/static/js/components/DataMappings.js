@@ -725,3 +725,9 @@ const getMappingStatusClass = (status) => {
     default: return 'bg-secondary';
   }
 };
+
+// Make component available globally
+window.DataMappings = DataMappings;
+
+// Export the component
+export default DataMappings;

@@ -29,14 +29,19 @@ def get_schema_path() -> str:
     """Get the SQL schema file path."""
     return str(Path(__file__).parent / "schema.sql")
 
-def get_db_connection() -> sqlite3.Connection:
+def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Get a connection to the SQLite database with row factory.
     
+    Args:
+        db_path: Optional path to the database file. If None, uses the default path.
+        
     Returns:
         SQLite connection object
     """
-    db_path = get_db_path()
+    if db_path is None:
+        db_path = get_db_path()
+    
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row  # Return rows as dictionaries
     return conn

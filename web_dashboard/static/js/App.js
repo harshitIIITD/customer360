@@ -2,6 +2,41 @@
 
 const { useState, useEffect } = React;
 
+// Get component references from global window object
+const Dashboard = window.Dashboard;
+const Customer360Data = window.Customer360Data;
+const DataQuality = window.DataQuality;
+const DataLineage = window.DataLineage;
+const SourceSystems = window.SourceSystems;
+const DataMappings = window.DataMappings;
+const ETLMonitoring = window.ETLMonitoring;
+const Header = window.Header || (() => {
+  return (
+    <header className="app-header">
+      <div className="logo">
+        <i className="bi bi-people-fill me-2" style={{ fontSize: '1.75rem' }}></i>
+        <h1>Customer 360 Dashboard</h1>
+      </div>
+      
+      <div className="user-menu">
+        <div className="dropdown">
+          <button className="dropdown-toggle" type="button" id="userMenuDropdown" data-bs-toggle="dropdown" aria-expanded="false">
+            <i className="bi bi-person-circle me-2"></i>
+            <span>Admin</span>
+          </button>
+          <ul className="dropdown-menu dropdown-menu-end" aria-labelledby="userMenuDropdown">
+            <li><a className="dropdown-item" href="#"><i className="bi bi-gear me-2"></i> Settings</a></li>
+            <li><a className="dropdown-item" href="#"><i className="bi bi-file-earmark-text me-2"></i> Documentation</a></li>
+            <li><hr className="dropdown-divider" /></li>
+            <li><a className="dropdown-item" href="#"><i className="bi bi-box-arrow-right me-2"></i> Logout</a></li>
+          </ul>
+        </div>
+      </div>
+    </header>
+  );
+});
+const Sidebar = window.Sidebar;
+
 const App = () => {
   const [activePage, setActivePage] = useState('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -61,23 +96,24 @@ const App = () => {
   };
 
   const renderPage = () => {
+    // Check if components exist before rendering them
     switch (activePage) {
       case 'dashboard':
-        return <Dashboard systemSummary={systemSummary} />;
+        return Dashboard ? <Dashboard systemSummary={systemSummary} /> : <div>Dashboard component not found</div>;
       case 'customer360':
-        return <Customer360Data />;
+        return Customer360Data ? <Customer360Data /> : <div>Customer360Data component not found</div>;
       case 'quality':
-        return <DataQuality />;
+        return DataQuality ? <DataQuality /> : <div>DataQuality component not found</div>;
       case 'lineage':
-        return <DataLineage />;
+        return DataLineage ? <DataLineage /> : <div>DataLineage component not found</div>;
       case 'sources':
-        return <SourceSystems />;
+        return SourceSystems ? <SourceSystems /> : <div>SourceSystems component not found</div>;
       case 'mappings':
-        return <DataMappings />;
+        return DataMappings ? <DataMappings /> : <div>DataMappings component not found</div>;
       case 'etl':
-        return <ETLMonitoring />;
+        return ETLMonitoring ? <ETLMonitoring /> : <div>ETLMonitoring component not found</div>;
       default:
-        return <Dashboard systemSummary={systemSummary} />;
+        return Dashboard ? <Dashboard systemSummary={systemSummary} /> : <div>Dashboard component not found</div>;
     }
   };
 
@@ -86,11 +122,13 @@ const App = () => {
       <Header />
       
       <div className="main-content">
-        <Sidebar 
-          activePage={activePage} 
-          onNavigate={handleNavigation}
-          collapsed={sidebarCollapsed}
-        />
+        {Sidebar ? (
+          <Sidebar 
+            activePage={activePage} 
+            onNavigate={handleNavigation}
+            collapsed={sidebarCollapsed}
+          />
+        ) : <div>Sidebar component not found</div>}
         
         <button 
           className={`sidebar-toggle ${sidebarCollapsed ? 'collapsed' : ''}`}
@@ -121,32 +159,8 @@ const App = () => {
   );
 };
 
-// Header Component
-const Header = () => {
-  return (
-    <header className="app-header">
-      <div className="logo">
-        <i className="bi bi-people-fill me-2" style={{ fontSize: '1.75rem' }}></i>
-        <h1>Customer 360 Dashboard</h1>
-      </div>
-      
-      <div className="user-menu">
-        <div className="dropdown">
-          <button className="dropdown-toggle" type="button" id="userMenuDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-            <i className="bi bi-person-circle me-2"></i>
-            <span>Admin</span>
-          </button>
-          <ul className="dropdown-menu dropdown-menu-end" aria-labelledby="userMenuDropdown">
-            <li><a className="dropdown-item" href="#"><i className="bi bi-gear me-2"></i> Settings</a></li>
-            <li><a className="dropdown-item" href="#"><i className="bi bi-file-earmark-text me-2"></i> Documentation</a></li>
-            <li><hr className="dropdown-divider" /></li>
-            <li><a className="dropdown-item" href="#"><i className="bi bi-box-arrow-right me-2"></i> Logout</a></li>
-          </ul>
-        </div>
-      </div>
-    </header>
-  );
-};
+// Make the App component available globally
+window.App = App;
 
 // Mount the App to the DOM
 ReactDOM.render(<App />, document.getElementById('root'));

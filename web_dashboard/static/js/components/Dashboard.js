@@ -438,5 +438,8 @@ const setupMappingChart = (statusCounts) => {
   }
 };
 
+// Make Dashboard available globally
+window.Dashboard = Dashboard;
+
 // Export the Dashboard component
 export default Dashboard;

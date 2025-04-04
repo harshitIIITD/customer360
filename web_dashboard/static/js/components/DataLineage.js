@@ -694,5 +694,8 @@ const getSeverityClass = (severity) => {
   }
 };
 
-// Export the DataLineage component
+// Make component available globally
+window.DataLineage = DataLineage;
+
+// Export the component
 export default DataLineage;
