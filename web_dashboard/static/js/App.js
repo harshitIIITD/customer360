@@ -74,6 +74,8 @@ const App = () => {
         return <SourceSystems />;
       case 'mappings':
         return <DataMappings />;
+      case 'etl':
+        return <ETLMonitoring />;
       default:
         return <Dashboard systemSummary={systemSummary} />;
     }

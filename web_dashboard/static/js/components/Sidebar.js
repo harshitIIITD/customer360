@@ -31,6 +31,11 @@ const Sidebar = ({ activePage, onNavigate, collapsed }) => {
       id: 'mappings',
       label: 'Data Mappings',
       icon: 'bi-arrows-angle-contract'
+    },
+    {
+      id: 'etl',
+      label: 'ETL Monitoring',
+      icon: 'bi-arrow-repeat'
     }
   ];
   

@@ -36,6 +36,9 @@ class DataSourceScanner:
         self.logger = logging.getLogger("DataSourceScanner")
         self.sample_data_dir = Path(__file__).parent.parent / "data" / "sample_source_data"
         os.makedirs(self.sample_data_dir, exist_ok=True)
+        # Store scan history and issues
+        self.scan_history = {}
+        self.detected_issues = {}
         
     def scan_source_system(self, source_id: int) -> Dict[str, Any]:
         """
@@ -68,6 +71,29 @@ class DataSourceScanner:
             # Store the schema information in the database or return it
             # For now, we'll just return it
             
+            # Track scan timestamp and results in history
+            import datetime
+            scan_timestamp = datetime.datetime.now().isoformat()
+            scan_result = {
+                "timestamp": scan_timestamp,
+                "source_id": source_id,
+                "source_name": source_name,
+                "tables_count": len(schema_info.get("tables", [])),
+                "columns_count": sum(len(table.get("columns", [])) for table in schema_info.get("tables", []))
+            }
+            
+            if source_id not in self.scan_history:
+                self.scan_history[source_id] = []
+            
+            self.scan_history[source_id].append(scan_result)
+            
+            # Enhanced scan detects potential issues in the schema
+            issues = self._detect_schema_issues(schema_info)
+            
+            # Store detected issues
+            self.detected_issues[source_id] = issues
+            
+            # Log scan operation and issues
             self._log_scan(source_id, source_name, schema_info)
             
             return {
@@ -75,6 +101,8 @@ class DataSourceScanner:
                 "source_id": source_id,
                 "source_name": source_name,
                 "schema": schema_info,
+                "scan_timestamp": scan_timestamp,
+                "detected_issues": issues,
                 "message": f"Successfully scanned source {source_name}"
             }
             
@@ -112,12 +140,16 @@ class DataSourceScanner:
             
             sample_data = self._load_sample_data(source_name, attribute_name)
             
+            # Enhanced: Analyze sample data quality
+            quality_metrics = self._analyze_sample_data_quality(sample_data) if sample_data else {}
+            
             return {
                 "success": True,
                 "source_id": source_id,
                 "source_name": source_name,
                 "sample_data": sample_data,
                 "attribute_name": attribute_name,
+                "quality_metrics": quality_metrics,
                 "message": f"Retrieved sample data from {source_name}"
             }
             
@@ -149,7 +181,9 @@ class DataSourceScanner:
                 attributes.append({
                     "name": f"{table_name}.{column.get('name')}",
                     "data_type": column.get("data_type"),
-                    "description": column.get("description", "")
+                    "description": column.get("description", ""),
+                    # Enhanced: Add potential issues for this attribute
+                    "potential_issues": self._check_attribute_issues(column)
                 })
         
         return {
@@ -157,7 +191,242 @@ class DataSourceScanner:
             "source_id": source_id,
             "source_name": schema_result.get("source_name"),
             "attributes": attributes,
+            "detected_issues": schema_result.get("detected_issues", []),
             "message": f"Extracted {len(attributes)} attributes from {schema_result.get('source_name')}"
+        }
+
+    def get_scan_history(self, source_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Get scan history for a source system or all systems.
+        
+        Args:
+            source_id: Optional ID of the source system
+            
+        Returns:
+            Dictionary with scan history
+        """
+        try:
+            if source_id is not None:
+                if source_id not in self.scan_history:
+                    return {
+                        "success": False,
+                        "error": f"No scan history found for source ID {source_id}"
+                    }
+                    
+                history = self.scan_history[source_id]
+                return {
+                    "success": True,
+                    "source_id": source_id,
+                    "scan_history": history,
+                    "count": len(history)
+                }
+            else:
+                # Return scan history for all sources
+                all_history = {}
+                for src_id, history in self.scan_history.items():
+                    all_history[src_id] = history
+                    
+                return {
+                    "success": True,
+                    "scan_history": all_history,
+                    "sources_count": len(all_history),
+                    "scans_count": sum(len(history) for history in all_history.values())
+                }
+                
+        except Exception as e:
+            error_msg = f"Error retrieving scan history: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def get_detected_issues(self, source_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Get detected issues for a source system or all systems.
+        
+        Args:
+            source_id: Optional ID of the source system
+            
+        Returns:
+            Dictionary with detected issues
+        """
+        try:
+            if source_id is not None:
+                if source_id not in self.detected_issues:
+                    return {
+                        "success": False,
+                        "error": f"No issues detected for source ID {source_id}"
+                    }
+                    
+                issues = self.detected_issues[source_id]
+                return {
+                    "success": True,
+                    "source_id": source_id,
+                    "issues": issues,
+                    "count": len(issues)
+                }
+            else:
+                # Return issues for all sources
+                all_issues = {}
+                for src_id, issues in self.detected_issues.items():
+                    all_issues[src_id] = issues
+                    
+                return {
+                    "success": True,
+                    "detected_issues": all_issues,
+                    "sources_count": len(all_issues),
+                    "issues_count": sum(len(issues) for issues in all_issues.values())
+                }
+                
+        except Exception as e:
+            error_msg = f"Error retrieving detected issues: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+    
+    def _detect_schema_issues(self, schema_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Detect potential issues in the schema.
+        
+        Args:
+            schema_info: Schema information dictionary
+            
+        Returns:
+            List of detected issues
+        """
+        issues = []
+        
+        # Check for tables without primary keys
+        for table in schema_info.get("tables", []):
+            table_name = table.get("name", "")
+            columns = table.get("columns", [])
+            
+            # Check for tables without primary keys (simplified check for demo)
+            has_primary_key = any("id" in col.get("name", "").lower() for col in columns)
+            if not has_primary_key:
+                issues.append({
+                    "issue_type": "missing_primary_key",
+                    "severity": "high",
+                    "table": table_name,
+                    "description": f"Table {table_name} appears to be missing a primary key"
+                })
+            
+            # Check for columns with generic names
+            generic_names = ["data", "value", "info", "text"]
+            for column in columns:
+                col_name = column.get("name", "").lower()
+                if col_name in generic_names:
+                    issues.append({
+                        "issue_type": "generic_column_name",
+                        "severity": "medium",
+                        "table": table_name,
+                        "column": column.get("name"),
+                        "description": f"Column {column.get('name')} in table {table_name} has a generic name"
+                    })
+                    
+            # Check for missing descriptions
+            missing_desc = [col.get("name") for col in columns if not col.get("description")]
+            if missing_desc:
+                issues.append({
+                    "issue_type": "missing_descriptions",
+                    "severity": "low",
+                    "table": table_name,
+                    "columns": missing_desc,
+                    "description": f"Columns in {table_name} are missing descriptions: {', '.join(missing_desc)}"
+                })
+                
+        return issues
+    
+    def _check_attribute_issues(self, column: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Check for potential issues with an attribute.
+        
+        Args:
+            column: Column information dictionary
+            
+        Returns:
+            List of potential issues
+        """
+        issues = []
+        col_name = column.get("name", "").lower()
+        data_type = column.get("data_type", "").upper()
+        
+        # Check for missing description
+        if not column.get("description"):
+            issues.append({
+                "issue_type": "missing_description",
+                "severity": "low",
+                "description": "Column is missing a description"
+            })
+            
+        # Check for proper data types for common fields
+        if "email" in col_name and data_type != "VARCHAR":
+            issues.append({
+                "issue_type": "inappropriate_data_type",
+                "severity": "medium",
+                "description": f"Email column should be VARCHAR, found {data_type}"
+            })
+            
+        if "date" in col_name and "DATE" not in data_type and "TIMESTAMP" not in data_type:
+            issues.append({
+                "issue_type": "inappropriate_data_type",
+                "severity": "medium",
+                "description": f"Date column should be DATE or TIMESTAMP, found {data_type}"
+            })
+            
+        return issues
+    
+    def _analyze_sample_data_quality(self, sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Analyze the quality of sample data.
+        
+        Args:
+            sample_data: List of sample data records
+            
+        Returns:
+            Dictionary with quality metrics
+        """
+        if not sample_data:
+            return {}
+        
+        # Group samples by column
+        columns = {}
+        for sample in sample_data:
+            col_name = sample.get("column_name")
+            if col_name not in columns:
+                columns[col_name] = []
+            columns[col_name].append(sample.get("sample_value"))
+        
+        # Analyze each column
+        column_metrics = {}
+        for col_name, values in columns.items():
+            # Count non-null values
+            non_null_count = sum(1 for v in values if v is not None)
+            
+            # Count unique values
+            unique_values = len(set(str(v) for v in values if v is not None))
+            
+            # Calculate metrics
+            metrics = {
+                "total_samples": len(values),
+                "non_null_count": non_null_count,
+                "null_count": len(values) - non_null_count,
+                "completeness": non_null_count / len(values) if values else 0,
+                "unique_count": unique_values,
+                "uniqueness": unique_values / non_null_count if non_null_count else 0
+            }
+            
+            column_metrics[col_name] = metrics
+        
+        # Overall metrics
+        total_samples = sum(metrics["total_samples"] for metrics in column_metrics.values())
+        total_non_null = sum(metrics["non_null_count"] for metrics in column_metrics.values())
+        
+        return {
+            "columns": column_metrics,
+            "overall": {
+                "total_samples": total_samples,
+                "non_null_count": total_non_null,
+                "completeness": total_non_null / total_samples if total_samples else 0,
+                "analyzed_columns": len(column_metrics)
+            }
         }
     
     def _simulate_schema_extraction(self, source_name: str) -> Dict[str, Any]:
