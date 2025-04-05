@@ -63,3 +63,4 @@ typing_extensions==4.13.1
 urllib3==2.3.0
 yarl==1.18.3
 zstandard==0.23.0
+gunicorn==20.1.0
