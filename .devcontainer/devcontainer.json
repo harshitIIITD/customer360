@@ -1,0 +1,7 @@
+{
+  "tasks": {
+    "build": "pnpm install",
+    "test": "cat package.json | grep test",
+    "launch": "pnpm install && pnpm run dev"
+  }
+}
